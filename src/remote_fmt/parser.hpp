@@ -44,7 +44,7 @@ namespace detail {
       std::string_view                            replacementField,
       bool                                        in_list,
       bool                                        in_map,
-      std::map<std::uint32_t, std::string> const& stringConstantsMap);
+      std::map<std::uint16_t, std::string> const& stringConstantsMap);
 
     template<typename It>
     ParseResult<It> parseType(
@@ -53,7 +53,7 @@ namespace detail {
       std::string_view                            replacementField,
       bool                                        in_list,
       bool                                        in_map,
-      std::map<std::uint32_t, std::string> const& stringConstantsMap);
+      std::map<std::uint16_t, std::string> const& stringConstantsMap);
 
     static std::optional<std::string_view> getNextReplacementFieldFromFmtStringAndAppendStrings(
       std::string&      out,
@@ -400,12 +400,12 @@ namespace detail {
       RangeLayout                                 rl,
       std::string_view                            replacementField,
       bool                                        in_list,
-      std::map<std::uint32_t, std::string> const& stringConstantsMap) {
+      std::map<std::uint16_t, std::string> const& stringConstantsMap) {
         if(rl != RangeLayout::compact) {
             return std::nullopt;
         }
 
-        auto const stringIt = stringConstantsMap.find(static_cast<std::uint32_t>(size));
+        auto const stringIt = stringConstantsMap.find(static_cast<std::uint16_t>(size));
         if(stringIt == stringConstantsMap.end()) {
             fmt::print(stderr, "cataloged string not found {}\n", size);
             return std::nullopt;
@@ -482,7 +482,7 @@ namespace detail {
           std::string_view                            replacementField,
           bool                                        in_map,
           bool                                        in_list,
-          std::map<std::uint32_t, std::string> const& stringConstantsMap) {
+          std::map<std::uint16_t, std::string> const& stringConstantsMap) {
             if(1 > static_cast<std::size_t>(std::distance(first, last))) {
                 return std::nullopt;
             }
@@ -557,7 +557,7 @@ namespace detail {
       std::string_view                            replacementField,
       bool                                        in_map,
       bool                                        in_list,
-      std::map<std::uint32_t, std::string> const& stringConstantsMap) {
+      std::map<std::uint16_t, std::string> const& stringConstantsMap) {
         if(
           size > std::numeric_limits<std::underlying_type_t<ExtendedTypeIdentifier>>::max()
           || !magic_enum::enum_contains<ExtendedTypeIdentifier>(size))
@@ -615,7 +615,7 @@ namespace detail {
       RangeLayout                                 rl,
       std::string_view                            replacementField,
       bool                                        in_map,
-      std::map<std::uint32_t, std::string> const& stringConstantsMap) {
+      std::map<std::uint16_t, std::string> const& stringConstantsMap) {
         if(rl != RangeLayout::on_ti_each) {
             return std::nullopt;
         }
@@ -677,7 +677,7 @@ namespace detail {
       RangeLayout                                 rl,
       std::string_view                            replacementField,
       RangeType                                   rt,
-      std::map<std::uint32_t, std::string> const& stringConstantsMap) {
+      std::map<std::uint16_t, std::string> const& stringConstantsMap) {
         auto const oRangeRepField = fixRangeReplacementField(replacementField);
         if(!oRangeRepField) {
             return std::nullopt;
@@ -742,7 +742,7 @@ namespace detail {
       std::string_view                            replacementField,
       bool                                        in_list,
       bool                                        in_map,
-      std::map<std::uint32_t, std::string> const& stringConstantsMap) {
+      std::map<std::uint16_t, std::string> const& stringConstantsMap) {
         if(first == last) {
             return std::nullopt;
         }
@@ -812,7 +812,7 @@ namespace detail {
       std::string_view                            replacementField,
       bool                                        in_list,
       bool                                        in_map,
-      std::map<std::uint32_t, std::string> const& stringConstantsMap) {
+      std::map<std::uint16_t, std::string> const& stringConstantsMap) {
         if(first == last) {
             return std::nullopt;
         }
@@ -832,7 +832,7 @@ namespace detail {
       It                                          first,
       It                                          last,
       FmtStringType                               type,
-      std::map<std::uint32_t, std::string> const& stringConstantsMap) {
+      std::map<std::uint16_t, std::string> const& stringConstantsMap) {
         auto it            = first;
         auto oFmtRangeSize = parseFmtStringTypeIdentifier(*it, type);
         if(!oFmtRangeSize) {
@@ -865,7 +865,7 @@ namespace detail {
             std::advance(it, fmtStringSize);
         } else {
             auto const fmtStringIt
-              = stringConstantsMap.find(static_cast<std::uint32_t>(fmtStringSize));
+              = stringConstantsMap.find(static_cast<std::uint16_t>(fmtStringSize));
             if(fmtStringIt == stringConstantsMap.end()) {
                 fmt::print(stderr, "cataloged format string not found {}\n", fmtStringSize);
                 return std::nullopt;
@@ -891,7 +891,7 @@ namespace detail {
       It                                          first,
       It                                          last,
       FmtStringType                               type,
-      std::map<std::uint32_t, std::string> const& stringConstantsMap) {
+      std::map<std::uint16_t, std::string> const& stringConstantsMap) {
         auto       it         = first;
         auto const oFmtString = parseFmtString(it, last, type, stringConstantsMap);
 
@@ -931,7 +931,7 @@ namespace detail {
       std::string_view                            replacementField,
       bool                                        in_list,
       bool                                        in_map,
-      std::map<std::uint32_t, std::string> const& stringConstantsMap) {
+      std::map<std::uint16_t, std::string> const& stringConstantsMap) {
         TypeIdentifier const ti = static_cast<TypeIdentifier>(*first & std::byte{0x03});
         if(ti == TypeIdentifier::fmt_string) {
             if(parseFmtStringTypeIdentifier(*first, FmtStringType::sub)) {
@@ -961,7 +961,7 @@ namespace detail {
 
 inline std::tuple<std::optional<std::string>, std::span<std::byte const>, std::size_t> parse(
   std::span<std::byte const>                  buffer,
-  std::map<std::uint32_t, std::string> const& stringConstantsMap) {
+  std::map<std::uint16_t, std::string> const& stringConstantsMap) {
     std::size_t unparsed_bytes{};
     while(!buffer.empty()) {
         auto const        it = std::find(buffer.begin(), buffer.end(), std::byte{0x55});
