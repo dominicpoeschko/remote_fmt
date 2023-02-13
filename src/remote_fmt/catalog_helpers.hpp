@@ -1,12 +1,14 @@
 #pragma once
 #include <cstdint>
-#include <fmt/format.hpp>
+#include <fmt/format.h>
 #include <map>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <fstream>
+
 namespace remote_fmt {
 
-inline std::map<std::uint16_t, std::string> parseStringConstantFromJsonsMapFromJsonFile(std::string const& file) {
+inline std::map<std::uint16_t, std::string> parseStringConstantsFromJsonFile(std::string const& file) {
     try {
         std::ifstream        f(file);
         nlohmann::json const data = nlohmann::json::parse(f);
