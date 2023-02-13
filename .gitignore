@@ -1,0 +1,7 @@
+*.kdev4
+build
+build_*
+compile_commands.json
+.clangd
+.vscode
+.cache
