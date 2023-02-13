@@ -118,7 +118,7 @@ namespace remote_fmt { namespace detail {
 
     template<std::integral T>
     constexpr TypeSize sizeToTypeSize(T size) {
-        static_assert(!std::is_signed_v<T>, "foo");
+        static_assert(!std::is_signed_v<T>, "Type must be unsigned!");
         if(size > std::numeric_limits<std::uint32_t>::max()) {
             return TypeSize::_8;
         }
@@ -133,7 +133,7 @@ namespace remote_fmt { namespace detail {
 
     template<std::integral T>
     constexpr TimeSize sizeToTimeSize(T size) {
-        static_assert(std::is_signed_v<T>, "foo");
+        static_assert(std::is_signed_v<T>, "Type must be signed!");
         if(
           size > std::numeric_limits<std::int32_t>::max()
           || size < std::numeric_limits<std::int32_t>::min())
@@ -145,7 +145,7 @@ namespace remote_fmt { namespace detail {
 
     template<std::integral T>
     constexpr RangeSize sizeToRangeSize(T size) {
-        static_assert(!std::is_signed_v<T>, "foo");
+        static_assert(!std::is_signed_v<T>, "Type must be unsigned!");
         if(size > std::numeric_limits<std::uint8_t>::max()) {
             return RangeSize::_2;
         }
@@ -176,8 +176,8 @@ namespace remote_fmt { namespace detail {
 
     template<auto... vs>
     struct Fail {
-        static_assert(sizeof...(vs) == 0, "foo");
-        static_assert(sizeof...(vs) != 0, "foo");
+        static_assert(sizeof...(vs) == 0, "Precondition failed!");
+        static_assert(sizeof...(vs) != 0, "Precondition failed!");
     };
 
     template<TypeIdentifier ti, auto... vs>
