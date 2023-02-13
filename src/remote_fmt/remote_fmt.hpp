@@ -621,6 +621,10 @@ public:
         requires std::is_same_v<std::remove_cvref_t<Cb>, std::remove_cvref_t<ComBackend>>
     constexpr explicit Printer(Cb&& cb) : comBackend{std::forward<Cb>(cb)} {}
 
+    ComBackend const& get_com_backend() const { return comBackend; }
+
+    ComBackend& get_com_backend() { return comBackend; }
+
     template<char... chars, typename... Args>
     constexpr void print(sc::StringConstant<chars...> fmt, Args&&... args) {
         checkFormatString<decltype(args)...>(fmt);
