@@ -88,7 +88,7 @@ function(target_generate_string_constants targetname)
     COMMAND
       python3 ${remote_fmt_dir}/tools/generate_string_constants.py
       --target_name ${targetname} --out_dir ${bin_dir} --source_dir
-      ${CMAKE_CURRENT_SOURCE_DIR} --compiler ${CMAKE_CXX_COMPILER} --objects
+      ${remote_fmt_dir} --compiler ${CMAKE_CXX_COMPILER} --objects
       $<TARGET_OBJECTS:${targetname}> --flags ${flags} DEPENDS
       ${remote_fmt_dir}/tools/generate_string_constants.py BYPRODUCS
       ${bin_dir}/${targetname}_string_constants.cpp

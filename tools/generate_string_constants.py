@@ -92,8 +92,8 @@ command.append(args.out_dir+"/"+args.target_name+"_string_constants.obj")
 command.append("-c")
 command.append(outfilename)
 command.append("-Wno-old-style-cast")
-command.append("-isystem"+ args.source_dir+"/kvasir/uc_log/remote_fmt/src/")
-command.append("-isystem"+ args.source_dir+"/kvasir/uc_log/remote_fmt/string_constant/src/")
+command.append("-isystem"+ args.source_dir+"/src/")
+command.append("-isystem"+ args.source_dir+"/string_constant/src/")
 
 for f in args.flags:
     for a in f.split():
