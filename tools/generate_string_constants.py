@@ -99,4 +99,13 @@ for f in args.flags:
     for a in f.split():
         command.append(a)
 
+std_defined=False
+for arg in command:
+    if(arg.startswith("-std=")):
+        std_defined=True
+
+if(not std_defined):
+    command.append("-std=c++20")
+
+print(command)
 subprocess.run(command, check=True)

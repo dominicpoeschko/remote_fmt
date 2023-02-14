@@ -80,18 +80,36 @@ function(target_generate_string_constants targetname)
 
   get_target_property(options_flags ${targetname} COMPILE_OPTIONS)
 
-  string(JOIN " " flags ${CMAKE_CXX_FLAGS} ${options_flags})
+  if("${options_flags}" STREQUAL "options_flags_NOTFOUND")
+    string(JOIN " " flags ${CMAKE_CXX_FLAGS})
+  else()
+    string(JOIN " " flags ${CMAKE_CXX_FLAGS} ${options_flags})
+  endif()
+
+  set(command
+      python3
+      ${remote_fmt_dir}/tools/generate_string_constants.py
+      --target_name
+      ${targetname}
+      --out_dir
+      ${bin_dir}
+      --source_dir
+      ${remote_fmt_dir}
+      --compiler
+      ${CMAKE_CXX_COMPILER}
+      --objects
+      $<TARGET_OBJECTS:${targetname}>)
+
+  if(NOT "${flags}" STREQUAL "")
+    list(APPEND command --flags=${flags})
+  endif()
 
   add_custom_command(
     TARGET ${targetname}
     PRE_LINK COMMAND_EXPAND_LISTS
     COMMAND
-      python3 ${remote_fmt_dir}/tools/generate_string_constants.py
-      --target_name ${targetname} --out_dir ${bin_dir} --source_dir
-      ${remote_fmt_dir} --compiler ${CMAKE_CXX_COMPILER} --objects
-      $<TARGET_OBJECTS:${targetname}> --flags ${flags} DEPENDS
-      ${remote_fmt_dir}/tools/generate_string_constants.py BYPRODUCS
-      ${bin_dir}/${targetname}_string_constants.cpp
+      ${command} DEPENDS ${remote_fmt_dir}/tools/generate_string_constants.py
+      BYPRODUCS ${bin_dir}/${targetname}_string_constants.cpp
       ${bin_dir}/${targetname}_string_constants.obj
       ${bin_dir}/${targetname}_string_constants.json)
 
