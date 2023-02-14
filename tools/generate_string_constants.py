@@ -107,5 +107,4 @@ for arg in command:
 if(not std_defined):
     command.append("-std=c++20")
 
-print(command)
 subprocess.run(command, check=True)
