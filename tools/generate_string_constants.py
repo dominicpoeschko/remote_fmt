@@ -55,6 +55,7 @@ for f in args.objects:
             symboles.append(l.strip().removeprefix("U "))
 
 symboles = list(set(symboles))
+symboles.sort()
 outfilename=args.out_dir+"/"+args.target_name+"_string_constants.cpp"
 
 indexmap=[]
