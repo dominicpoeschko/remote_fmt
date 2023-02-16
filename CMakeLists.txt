@@ -6,23 +6,7 @@ set(remote_fmt_dir
     ${CMAKE_CURRENT_LIST_DIR}
     CACHE INTERNAL "")
 
-include(FetchContent)
-
-FetchContent_Declare(
-  magic_enum
-  GIT_REPOSITORY https://github.com/Neargye/magic_enum
-  GIT_TAG master)
-FetchContent_MakeAvailable(magic_enum)
-
 add_library(remote_fmt INTERFACE)
-add_subdirectory(string_constant)
-
-target_include_directories(remote_fmt INTERFACE src)
-target_link_libraries(
-  remote_fmt INTERFACE string_constant::string_constant fmt::fmt-header-only
-                       magic_enum::magic_enum)
-
-add_library(remote_fmt::remote_fmt ALIAS remote_fmt)
 
 if(NOT CMAKE_CROSSCOMPILING)
   include(cmake_helpers/FindOrFetch.cmake)
@@ -30,12 +14,15 @@ if(NOT CMAKE_CROSSCOMPILING)
                         GIT_TAG master)
   find_or_fetch_package(nlohmann_json 3.9 GIT_REPOSITORY
                         https://github.com/nlohmann/json GIT_TAG master)
+  find_or_fetch_package(magic_enum 0.7 GIT_REPOSITORY
+                        https://github.com/Neargye/magic_enum GIT_TAG master)
 else()
   include(FetchContent)
   FetchContent_Declare(
     fmt
     GIT_REPOSITORY https://github.com/fmtlib/fmt.git
-    GIT_TAG master)
+    GIT_TAG master
+    GIT_SHALLOW TRUE)
   FetchContent_GetProperties(fmt)
   FetchContent_Populate(fmt)
   add_subdirectory(${fmt_SOURCE_DIR} ${fmt_BINARY_DIR} EXCLUDE_FROM_ALL)
@@ -46,7 +33,23 @@ else()
   target_compile_options(
     remote_fmt INTERFACE "-DFMT_ASSERT(condition, message)=assert(condition)")
 
+  FetchContent_Declare(
+    magic_enum
+    GIT_REPOSITORY https://github.com/Neargye/magic_enum
+    GIT_TAG master
+    GIT_SHALLOW TRUE)
+
+  FetchContent_MakeAvailable(magic_enum)
 endif()
+
+add_subdirectory(string_constant)
+
+target_include_directories(remote_fmt INTERFACE src)
+target_link_libraries(
+  remote_fmt INTERFACE string_constant::string_constant fmt::fmt-header-only
+                       magic_enum::magic_enum)
+
+add_library(remote_fmt::remote_fmt ALIAS remote_fmt)
 
 if(NOT CMAKE_CROSSCOMPILING)
   add_library(remote_fmt_parser INTERFACE)
