@@ -89,8 +89,9 @@ function(target_generate_string_constants targetname)
     string(JOIN " " flags ${CMAKE_CXX_FLAGS} ${options_flags})
   endif()
 
+  find_package(PythonInterp 3 REQUIRED)
   set(command
-      python3
+      ${PYTHON_EXECUTABLE}
       ${remote_fmt_dir}/tools/generate_string_constants.py
       --target_name
       ${targetname}
