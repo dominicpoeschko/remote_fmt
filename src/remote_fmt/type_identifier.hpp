@@ -35,7 +35,7 @@ namespace remote_fmt { namespace detail {
     enum class TypeSize : std::uint8_t { _1, _2, _4, _8 };
     enum class RangeSize : std::uint8_t { _1, _2 };
     enum class TimeSize : std::uint8_t { _4, _8 };
-    enum class ExtendedTypeIdentifier : std::uint8_t { styled };
+    enum class ExtendedTypeIdentifier : std::uint8_t { styled, optional };
 
     template<typename T, typename Append>
     void appendSized(TypeSize ts, T v, Append append) {
@@ -274,7 +274,10 @@ namespace remote_fmt { namespace detail {
         RangeType const   rt = static_cast<RangeType>((v & std::byte{0x70}) >> 4);
         RangeLayout const rl = static_cast<RangeLayout>((v & std::byte{0x80}) >> 7);
 
-        if(static_cast<std::uint8_t>(rt) > static_cast<std::uint8_t>(RangeType::extendedTypeIdentifier)) {
+        if(
+          static_cast<std::uint8_t>(rt)
+          > static_cast<std::uint8_t>(RangeType::extendedTypeIdentifier))
+        {
             return std::nullopt;
         }
 
@@ -323,7 +326,7 @@ namespace remote_fmt { namespace detail {
     }
 
     template<ExtendedTypeIdentifier eti, typename Append>
-    void  appendExtenedTypeIdentifier(Append append) {
+    void appendExtendedTypeIdentifier(Append append) {
         auto constexpr rs = detail::sizeToRangeSize(static_cast<std::size_t>(eti));
         auto constexpr ti = detail::rangeTypeIdentifier<
           detail::RangeType::extendedTypeIdentifier,

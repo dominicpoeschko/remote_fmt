@@ -549,6 +549,39 @@ namespace detail {
         }
     };
 
+    template<>
+    struct ExtendedTypeIdentifierParser<ExtendedTypeIdentifier::optional> {
+        template<typename It>
+        static ParseResult<It> parse(
+          It                                          first,
+          It                                          last,
+          std::string_view                            replacementField,
+          bool                                        in_map,
+          bool                                        in_list,
+          std::map<std::uint16_t, std::string> const& stringConstantsMap) {
+            if(1 > static_cast<std::size_t>(std::distance(first, last))) {
+                return std::nullopt;
+            }
+            std::uint8_t const isSet = static_cast<std::uint8_t>(*first);
+            ++first;
+
+            if(isSet != 0 && isSet != 1) {
+                return std::nullopt;
+            }
+
+            if(isSet == 0) {
+                return ParseResult_<It>{"()", first};
+            }
+            auto const inner_result
+              = parseType(first, last, replacementField, in_list, in_map, stringConstantsMap);
+
+            if(!inner_result) {
+                return std::nullopt;
+            }
+            return ParseResult_<It>{inner_result->str, inner_result->pos};
+        }
+    };
+
     template<typename It>
     ParseResult<It> parseExtendedTypeIdentifier(
       It                                          first,

@@ -463,11 +463,14 @@ template<typename T>
 struct formatter<std::optional<T>> {
     template<typename Printer>
     constexpr auto format(std::optional<T> const& v, Printer& printer) const {
+        detail::appendExtendedTypeIdentifier<detail::ExtendedTypeIdentifier::optional>(
+          [&](auto const&... vs) { printer.printHelper(vs...); });
+
+        printer.printHelper(static_cast<std::uint8_t>(v.has_value()));
+
         if(v) {
             return formatter<std::remove_cvref_t<T>>{}.format(*v, printer);
         }
-        constexpr std::string_view msg{"()"};
-        return formatter<std::string_view>{}.format(msg, printer);
     }
 };
 
@@ -488,7 +491,7 @@ template<typename T>
 struct formatter<fmt::detail::styled_arg<T>> {
     template<typename Printer>
     constexpr auto format(fmt::detail::styled_arg<T> const& v, Printer& printer) const {
-        detail::appendExtenedTypeIdentifier<detail::ExtendedTypeIdentifier::styled>(
+        detail::appendExtendedTypeIdentifier<detail::ExtendedTypeIdentifier::styled>(
           [&](auto const&... vs) { printer.printHelper(vs...); });
 
         auto const& style = v.style;
