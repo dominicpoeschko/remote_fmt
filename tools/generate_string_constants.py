@@ -1,5 +1,6 @@
 import argparse
 import subprocess
+import json
 
 parser = argparse.ArgumentParser(
                     prog = 'generate_string_constatns',
@@ -34,18 +35,6 @@ def parse_symbol(symbol):
 
     return parse_StringConstant(symbol)
 
-def generate_entry(symbol, id):
-    ret="["
-    ret+=str(id)
-    ret+=","
-
-    ret+="\""
-    ret+=parse_symbol(symbol).replace('"','\\"')
-
-    ret+="\""
-    ret+="]"
-    return ret
-
 symboles = [];
 
 for f in args.objects:
@@ -70,20 +59,15 @@ with open(outfilename, 'w') as outfile:
         outfile.write("{return ")
         outfile.write(str(id));
         outfile.write(";}\n")
-        indexmap.append(generate_entry(s,id))
+        entry = []
+        entry.append(id)
+        entry.append(parse_symbol(s))
+        indexmap.append(entry)
         id=id+1
     outfile.write("\n")
 
 with open(args.out_dir+"/"+args.target_name+"_string_constants.json", 'w') as outfile:
-    outfile.write('{"StringConstants":[')
-    first = True
-    for e in indexmap:
-        if first:
-            first = False
-        else:
-            outfile.write(',')
-        outfile.write(e)
-    outfile.write(']}')
+    outfile.write(json.dumps({"StringConstants":indexmap}))
 
 command = []
 command.append(args.compiler)
