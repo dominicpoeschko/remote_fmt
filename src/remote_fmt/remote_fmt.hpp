@@ -24,8 +24,27 @@
 #include <variant>
 
 #if __has_include(<magic_enum.hpp>)
+
+    #ifdef __GNUC__
+        #pragma GCC diagnostic push
+        #pragma GCC diagnostic ignored "-Wextra-semi-stmt"
+    #endif
+
+    #ifdef __clang__
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wextra-semi-stmt"
+    #endif
+
     #include <magic_enum.hpp>
     #include <magic_enum_switch.hpp>
+
+    #ifdef __GNUC__
+        #pragma GCC diagnostic pop
+    #endif
+    #ifdef __clang__
+        #pragma clang diagnostic pop
+    #endif
+
 #endif
 
 #if __has_include(<fmt/color.h>)
