@@ -27,7 +27,7 @@
 
     #ifdef __GNUC__
         #pragma GCC diagnostic push
-        #pragma GCC diagnostic ignored "-Wextra-semi-stmt"
+        #pragma GCC diagnostic ignored "-Wextra-semi"
     #endif
 
     #ifdef __clang__
