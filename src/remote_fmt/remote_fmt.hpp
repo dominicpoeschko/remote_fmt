@@ -485,7 +485,7 @@ struct formatter<std::optional<T>> {
         detail::appendExtendedTypeIdentifier<detail::ExtendedTypeIdentifier::optional>(
           [&](auto const&... vs) { printer.printHelper(vs...); });
 
-        printer.printHelper(static_cast<std::uint8_t>(v.has_value()));
+        printer.printHelper(static_cast<std::uint8_t>(v.has_value()?1:0));
 
         if(v) {
             return formatter<std::remove_cvref_t<T>>{}.format(*v, printer);

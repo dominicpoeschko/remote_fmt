@@ -538,7 +538,7 @@ namespace detail {
             }
 
             auto const inner_result
-              = parseType(first, last, replacementField, in_list, in_map, stringConstantsMap);
+              = parseFromTypeId(first, last, replacementField, in_list, in_map, stringConstantsMap);
 
             if(!inner_result) {
                 return std::nullopt;
@@ -573,7 +573,7 @@ namespace detail {
                 return ParseResult_<It>{"()", first};
             }
             auto const inner_result
-              = parseType(first, last, replacementField, in_list, in_map, stringConstantsMap);
+              = parseFromTypeId(first, last, replacementField, in_list, in_map, stringConstantsMap);
 
             if(!inner_result) {
                 return std::nullopt;
