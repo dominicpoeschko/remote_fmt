@@ -91,7 +91,7 @@ function(target_generate_string_constants targetname)
 
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
   set(command
-      ${PYTHON_EXECUTABLE}
+      ${Python3_EXECUTABLE}
       ${remote_fmt_dir}/tools/generate_string_constants.py
       --target_name
       ${targetname}
