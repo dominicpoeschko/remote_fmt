@@ -18,13 +18,11 @@ if(NOT CMAKE_CROSSCOMPILING)
                         https://github.com/Neargye/magic_enum GIT_TAG master)
 else()
   include(FetchContent)
-  FetchContent_Declare(
+  FetchContent_Populate(
     fmt
     GIT_REPOSITORY https://github.com/fmtlib/fmt.git
     GIT_TAG master
-    GIT_SHALLOW TRUE)
-  FetchContent_GetProperties(fmt)
-  FetchContent_Populate(fmt)
+    )
   add_subdirectory(${fmt_SOURCE_DIR} ${fmt_BINARY_DIR} EXCLUDE_FROM_ALL)
 
   target_compile_definitions(remote_fmt
