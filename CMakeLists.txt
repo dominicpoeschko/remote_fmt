@@ -14,8 +14,8 @@ if(NOT CMAKE_CROSSCOMPILING)
                         GIT_TAG master)
   find_or_fetch_package(nlohmann_json 3.9 GIT_REPOSITORY
                         https://github.com/nlohmann/json GIT_TAG master)
-  find_or_fetch_package(magic_enum 0.8 GIT_REPOSITORY
-                        https://github.com/Neargye/magic_enum GIT_TAG master)
+  find_or_fetch_package(magic_enum 0.9.6 GIT_REPOSITORY
+                        https://github.com/Neargye/magic_enum GIT_TAG v0.9.6)
 else()
   include(FetchContent)
   FetchContent_Populate(
