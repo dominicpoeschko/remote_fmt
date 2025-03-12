@@ -2,20 +2,17 @@
 
 #include "remote_fmt/remote_fmt.hpp"
 #include "remote_fmt/type_identifier.hpp"
+#include "remote_fmt/fmt_wrapper.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstring>
-#include <fmt/chrono.h>
-#include <fmt/format.h>
-#include <fmt/ostream.h>
-#include <fmt/ranges.h>
 #include <functional>
 #include <iomanip>
 #include <iterator>
-#include <magic_enum.hpp>
-#include <magic_enum_switch.hpp>
+#include <magic_enum/magic_enum.hpp>
+#include <magic_enum/magic_enum_switch.hpp>
 #include <map>
 #include <optional>
 #include <ratio>

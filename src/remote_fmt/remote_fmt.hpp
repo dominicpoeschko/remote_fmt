@@ -23,7 +23,7 @@
 #include <utility>
 #include <variant>
 
-#if __has_include(<magic_enum.hpp>)
+#if __has_include(<magic_enum/magic_enum.hpp>)
 
     #ifdef __GNUC__
         #pragma GCC diagnostic push
@@ -35,8 +35,8 @@
         #pragma clang diagnostic ignored "-Wextra-semi-stmt"
     #endif
 
-    #include <magic_enum.hpp>
-    #include <magic_enum_switch.hpp>
+    #include <magic_enum/magic_enum.hpp>
+    #include <magic_enum/magic_enum_switch.hpp>
 
     #ifdef __GNUC__
         #pragma GCC diagnostic pop

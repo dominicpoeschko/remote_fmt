@@ -1,6 +1,7 @@
 #pragma once
+#include "remote_fmt/fmt_wrapper.hpp"
+
 #include <cstdint>
-#include <fmt/format.h>
 #include <fstream>
 #include <map>
 #include <nlohmann/json.hpp>

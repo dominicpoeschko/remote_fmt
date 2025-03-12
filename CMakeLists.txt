@@ -1,4 +1,7 @@
 cmake_minimum_required(VERSION 3.18)
+if(POLICY CMP0175)
+  cmake_policy(SET CMP0175 NEW)
+endif()
 
 project(remote_fmt VERSION 0.1.0)
 
@@ -10,12 +13,12 @@ add_library(remote_fmt INTERFACE)
 
 if(NOT CMAKE_CROSSCOMPILING)
   include(cmake_helpers/FindOrFetch.cmake)
-  find_or_fetch_package(fmt 9 GIT_REPOSITORY https://github.com/fmtlib/fmt.git
+  find_or_fetch_package(fmt 11.1 GIT_REPOSITORY https://github.com/fmtlib/fmt.git
                         GIT_TAG master)
-  find_or_fetch_package(nlohmann_json 3.9 GIT_REPOSITORY
+  find_or_fetch_package(nlohmann_json 3.11 GIT_REPOSITORY
                         https://github.com/nlohmann/json GIT_TAG master)
-  find_or_fetch_package(magic_enum 0.9.6 GIT_REPOSITORY
-                        https://github.com/Neargye/magic_enum GIT_TAG v0.9.6)
+  find_or_fetch_package(magic_enum 0.9.7 GIT_REPOSITORY
+                        https://github.com/Neargye/magic_enum GIT_TAG master)
 else()
   include(FetchContent)
   FetchContent_Populate(
@@ -110,8 +113,8 @@ function(target_generate_string_constants targetname)
     TARGET ${targetname}
     PRE_LINK COMMAND_EXPAND_LISTS
     COMMAND
-      ${command} DEPENDS ${remote_fmt_dir}/tools/generate_string_constants.py
-      BYPRODUCS ${bin_dir}/${targetname}_string_constants.cpp
+      ${command}
+      BYPRODUCTS ${bin_dir}/${targetname}_string_constants.cpp
       ${bin_dir}/${targetname}_string_constants.obj
       ${bin_dir}/${targetname}_string_constants.json)
 
