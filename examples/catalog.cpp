@@ -1,14 +1,15 @@
-#include <type_traits>
-#include "remote_fmt/remote_fmt.hpp"
-#include "remote_fmt/parser.hpp"
 #include "remote_fmt/catalog.hpp"
+
+#include "remote_fmt/parser.hpp"
+#include "remote_fmt/remote_fmt.hpp"
 #include "remote_fmt/type_identifier.hpp"
 
-#include <span>
 #include <cstddef>
-#include <map>
-#include <vector>
 #include <fmt/format.h>
+#include <map>
+#include <span>
+#include <type_traits>
+#include <vector>
 
 using namespace sc::literals;
 
@@ -22,51 +23,51 @@ static constexpr auto testString{"Test {}"_sc};
 
 //Specification of the catalog function
 template<>
-std::uint16_t remote_fmt::catalog<std::remove_cvref_t<decltype(testString)>>(){
+std::uint16_t remote_fmt::catalog<std::remove_cvref_t<decltype(testString)>>() {
     return 0;
 }
 
 //Message catalog used on the remote system
 std::map<std::uint16_t, std::string> messageCatalog{
-    {remote_fmt::catalog<std::remove_cvref_t<decltype(testString)>>(), std::string{std::string_view{testString}}}
-}; 
+  {remote_fmt::catalog<std::remove_cvref_t<decltype(testString)>>(),
+   std::string{std::string_view{testString}}}
+};
 
 //#### Non-Generated Code ####
 
 //CommunicationBackend class provides an interface between the
 //remote_fmt printer and the communication channel (Socket/UART/etc).
 //In this example the communication channel is abstracted by a std::vector.
-struct CommunicationBackend{
+struct CommunicationBackend {
     std::vector<std::byte> memory;
 
-    void initTransfer(){
-        fmt::print("Before write\n");
-    }
-    void finalizeTransfer(){
-        fmt::print("After write\n");
-    }
-    void write(std::span<std::byte const> s){
+    void initTransfer() { fmt::print("Before write\n"); }
+
+    void finalizeTransfer() { fmt::print("After write\n"); }
+
+    void write(std::span<std::byte const> s) {
         fmt::print("Write {}\n", s.size());
         memory.insert(memory.end(), s.begin(), s.end());
     }
 };
 
-int main(){
+int main() {
     //The remote_fmt printer is instanced with the CommunicationBackend class
     //as a template parameter.
     remote_fmt::Printer<CommunicationBackend> printer{};
-    
+
     //The print-function is called and the CommunicationBackend handles
     //communication with the remote device.
     printer.print("Test {}"_sc, 123);
     assert(!printer.get_com_backend().memory.empty());
-    
+
     //The data is sent to the input buffer of the remote device.
     auto const& buffer = printer.get_com_backend().memory;
 
     //The remote device parses the data from the buffer with a messageCatalog
-    auto const& [message, remainingBytes, discardedBytes] = remote_fmt::parse(std::span{buffer}, messageCatalog);
-    
+    auto const& [message, remainingBytes, discardedBytes]
+      = remote_fmt::parse(std::span{buffer}, messageCatalog, [](auto const&) {});
+
     assert(remainingBytes.size() == 0);
     assert(discardedBytes == 0);
     assert(message.has_value());

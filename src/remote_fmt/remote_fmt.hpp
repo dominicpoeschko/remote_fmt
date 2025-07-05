@@ -33,6 +33,7 @@
     #ifdef __clang__
         #pragma clang diagnostic push
         #pragma clang diagnostic ignored "-Wextra-semi-stmt"
+        #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
     #endif
 
     #include <magic_enum/magic_enum.hpp>
@@ -48,10 +49,24 @@
 #endif
 
 #if __has_include(<fmt/color.h>)
+    #ifdef __clang__
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
+        #pragma clang diagnostic ignored "-Wunsafe-buffer-usage-in-libc-call"
+    #endif
     #include <fmt/color.h>
+    #ifdef __clang__
+        #pragma clang diagnostic pop
+    #endif
 #endif
 
 namespace remote_fmt {
+
+// Protocol constants
+namespace protocol {
+    constexpr std::byte Start_marker{0x55};
+    constexpr std::byte End_marker{0xAA};
+}   // namespace protocol
 
 #ifndef REMOTE_FMT_USE_CATALOG
 static constexpr bool use_catalog = true;
@@ -138,57 +153,61 @@ namespace detail {
     }
 
     template<std::size_t N>
-    consteval void compile_time_assert(char const (&str)[N], bool predicat) {
+    consteval void compile_time_assert(char const (&str)[N],
+                                       bool predicat) {
+#ifdef __clang__
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
+#endif
         [[maybe_unused]] auto const x = str[N - 1 + static_cast<std::size_t>(!predicat)];
+#ifdef __clang__
+    #pragma clang diagnostic pop
+#endif
     }
 
     template<typename T>
     concept is_tuple_like = requires {
-                                {
-                                    std::tuple_size<T>::value
-                                    } -> std::convertible_to<std::size_t>;
-                            };
+        {
+            std::tuple_size<T>::value
+        } -> std::convertible_to<std::size_t>;
+    };
 
     template<typename T>
-    concept is_tuple_like_but_not_range = is_tuple_like<T> && !
-    std::ranges::range<T>;
+    concept is_tuple_like_but_not_range = is_tuple_like<T> && !std::ranges::range<T>;
 
     template<typename T>
-    concept is_string_like
-      = std::is_convertible_v<T, std::string_view> && requires(T v) {
-                                                          {
-                                                              v.size()
-                                                              } -> std::convertible_to<std::size_t>;
-                                                          {
-                                                              v.data()
-                                                              } -> std::convertible_to<char const*>;
-                                                          {
-                                                              v.starts_with(std::string_view{})
-                                                              } -> std::convertible_to<bool>;
-                                                      };
+    concept is_string_like = std::is_convertible_v<T, std::string_view> && requires(T v) {
+        {
+            v.size()
+        } -> std::convertible_to<std::size_t>;
+        {
+            v.data()
+        } -> std::convertible_to<char const*>;
+        {
+            v.starts_with(std::string_view{})
+        } -> std::convertible_to<bool>;
+    };
 
     template<typename T>
-    concept is_range_but_not_string_like = std::ranges::range<T> && !
-    is_string_like<T>;
+    concept is_range_but_not_string_like = std::ranges::range<T> && !is_string_like<T>;
 
     template<typename T>
     concept is_map = requires { typename T::mapped_type; };
 
     template<typename T>
-    concept is_set = requires { typename T::key_type; } && !
-    is_map<T>;
+    concept is_set = requires { typename T::key_type; } && !is_map<T>;
 
 }   // namespace detail
 
-template<typename... Args, char... chars>
+template<typename... Args,
+         char... chars>
 consteval void checkFormatString(sc::StringConstant<chars...>) {
     detail::compile_time_assert(
       "invalid chars in format",
       detail::allCharsValid(std::string_view{sc::StringConstant<chars...>{}}));
-    detail::compile_time_assert(
-      "invalid replacement field count",
-      detail::is_arg_count_valid<sizeof...(Args)>(
-        std::string_view{sc::StringConstant<chars...>{}}));
+    detail::compile_time_assert("invalid replacement field count",
+                                detail::is_arg_count_valid<sizeof...(Args)>(
+                                  std::string_view{sc::StringConstant<chars...>{}}));
 }
 
 template<typename T>
@@ -197,17 +216,18 @@ struct formatter;
 template<std::integral T>
 struct formatter<T> {
     template<typename Printer>
-    constexpr auto format(T const& v, Printer& printer) const {
+    constexpr auto format(T const& v,
+                          Printer& printer) const {
         static_assert(8 >= sizeof(v), "bad type: no [u]int128_t");
         static_assert(1 == sizeof(char), "bad type: only 1 byte char");
 
         constexpr auto ts = detail::typeToTypeSize<T>();
-        constexpr auto ti = detail::trivialTypeIdentifier < std::is_same_v<bool, T>
-                            ? detail::TrivialType::boolean
-                          : std::is_same_v<char, T> ? detail::TrivialType::character
-                          : std::is_signed_v<T>     ? detail::TrivialType::signed_
-                                                    : detail::TrivialType::unsigned_,
-                       ts > ();
+        constexpr auto ti
+          = detail::trivialTypeIdentifier<std::is_same_v<bool, T>   ? detail::TrivialType::boolean
+                                          : std::is_same_v<char, T> ? detail::TrivialType::character
+                                          : std::is_signed_v<T>     ? detail::TrivialType::signed_
+                                                                : detail::TrivialType::unsigned_,
+                                          ts>();
 
         printer.printHelper(ti, v);
     }
@@ -216,7 +236,8 @@ struct formatter<T> {
 template<std::floating_point T>
 struct formatter<T> {
     template<typename Printer>
-    constexpr auto format(T const& v, Printer& printer) const {
+    constexpr auto format(T const& v,
+                          Printer& printer) const {
         static_assert(std::numeric_limits<T>::is_iec559, "strange floating_point");
         static_assert(8 >= sizeof(v), "bad type: no long double");
         static_assert(4 == sizeof(float), "bad type: float");
@@ -234,8 +255,9 @@ template<typename T>
           || std::is_same_v<T, std::nullptr_t>
 struct formatter<T> {
     template<typename Printer>
-    constexpr auto format(T v, Printer& printer) const {
-        static_assert(8 >= sizeof(v), "bad type: no 128 bit pointes...");
+    constexpr auto format(T        v,
+                          Printer& printer) const {
+        static_assert(8 >= sizeof(v), "bad type: no 128 bit pointers...");
         static_assert(sizeof(std::uintptr_t) == sizeof(v), "bad type: strange pointer");
 
         constexpr auto ts = detail::typeToTypeSize<std::uintptr_t>();
@@ -244,21 +266,28 @@ struct formatter<T> {
         printer.printHelper(ti, std::bit_cast<std::uintptr_t>(v));
     }
 };
+
 namespace detail {
 
-    template<TimeType tt, typename Rep, std::intmax_t Num, std::intmax_t Denom, typename Append>
-    constexpr auto
-    format_time(std::chrono::duration<Rep, std::ratio<Num, Denom>> const& v, Append append) {
-        static_assert(
-          std::is_same<Rep, std::int64_t>::value || (4 >= sizeof(Rep) && std::is_trivial_v<Rep>),
-          "only with std::int64_t or smaller rep");
-        using SignedRep = std::conditional_t<
-          std::is_same_v<std::uint32_t, Rep>,
-          std::int64_t,
-          std::conditional_t<
-            std::is_same_v<std::uint16_t, Rep> || std::is_same_v<std::uint8_t, Rep>,
-            std::int32_t,
-            Rep>>;
+    template<TimeType tt,
+             typename Rep,
+             std::intmax_t Num,
+             std::intmax_t Denom,
+             typename Append>
+    constexpr auto format_time(std::chrono::duration<Rep,
+                                                     std::ratio<Num,
+                                                                Denom>> const& v,
+                               Append                                          append) {
+        static_assert(std::is_same<Rep, std::int64_t>::value
+                        || (4 >= sizeof(Rep) && std::is_trivial_v<Rep>),
+                      "only with std::int64_t or smaller rep");
+        using SignedRep
+          = std::conditional_t<std::is_same_v<std::uint32_t, Rep>,
+                               std::int64_t,
+                               std::conditional_t<std::is_same_v<std::uint16_t, Rep>
+                                                    || std::is_same_v<std::uint8_t, Rep>,
+                                                  std::int32_t,
+                                                  Rep>>;
         constexpr auto num = std::ratio<Num, Denom>::num;
         constexpr auto den = std::ratio<Num, Denom>::den;
 
@@ -272,10 +301,9 @@ namespace detail {
         auto const ts    = detail::sizeToTimeSize(count);
         auto const ti    = detail::timeTypeIdentifier<tt, num_size, den_size>(ts);
 
-        append(
-          ti,
-          static_cast<detail::typeSize_unsigned_t<num_size>>(num),
-          static_cast<detail::typeSize_unsigned_t<den_size>>(den));
+        append(ti,
+               static_cast<detail::typeSize_unsigned_t<num_size>>(num),
+               static_cast<detail::typeSize_unsigned_t<den_size>>(den));
 
         appendSized(ts, count, append);
     }
@@ -284,7 +312,9 @@ namespace detail {
 template<typename Rep, typename Period>
 struct formatter<std::chrono::duration<Rep, Period>> {
     template<typename Printer>
-    constexpr auto format(std::chrono::duration<Rep, Period> const& v, Printer& printer) const {
+    constexpr auto format(std::chrono::duration<Rep,
+                                                Period> const& v,
+                          Printer&                             printer) const {
         return detail::format_time<detail::TimeType::duration>(v, [&](auto const&... vs) {
             printer.printHelper(vs...);
         });
@@ -294,8 +324,9 @@ struct formatter<std::chrono::duration<Rep, Period>> {
 template<typename Clock, typename Duration>
 struct formatter<std::chrono::time_point<Clock, Duration>> {
     template<typename Printer>
-    constexpr auto
-    format(std::chrono::time_point<Clock, Duration> const& v, Printer& printer) const {
+    constexpr auto format(std::chrono::time_point<Clock,
+                                                  Duration> const& v,
+                          Printer&                                 printer) const {
         return detail::format_time<detail::TimeType::time_point>(
           v.time_since_epoch(),
           [&](auto const&... vs) { printer.printHelper(vs...); });
@@ -305,7 +336,8 @@ struct formatter<std::chrono::time_point<Clock, Duration>> {
 template<>
 struct formatter<std::byte> {
     template<typename Printer>
-    constexpr auto format(std::byte const& v, Printer& printer) const {
+    constexpr auto format(std::byte const& v,
+                          Printer&         printer) const {
         return formatter<std::uint8_t>{}.format(static_cast<std::uint8_t>(v), printer);
     }
 };
@@ -313,11 +345,11 @@ struct formatter<std::byte> {
 template<detail::is_string_like T>
 struct formatter<T> {
     template<typename Printer>
-    constexpr auto format(T const& v, Printer& printer) const {
+    constexpr auto format(T const& v,
+                          Printer& printer) const {
         std::string_view const sv = [&]() -> std::string_view {
-            if constexpr(
-              std::is_same_v<char*, std::remove_cvref_t<T>>
-              || std::is_same_v<char const*, std::remove_cvref_t<T>>)
+            if constexpr(std::is_same_v<char*, std::remove_cvref_t<T>>
+                         || std::is_same_v<char const*, std::remove_cvref_t<T>>)
             {
                 if(v == nullptr) {
                     return {};
@@ -340,12 +372,12 @@ struct formatter<T> {
 template<char... chars>
 struct formatter<sc::StringConstant<chars...>> {
     template<typename Printer>
-    constexpr auto format(sc::StringConstant<chars...> const& v, Printer& printer) const {
+    constexpr auto format(sc::StringConstant<chars...> const& v,
+                          Printer&                            printer) const {
         if constexpr(use_catalog) {
             auto constexpr rs = detail::sizeToRangeSize(std::numeric_limits<std::uint16_t>::max());
-            auto constexpr ti = detail::rangeTypeIdentifier<
-              detail::RangeType::cataloged_string,
-              detail::RangeLayout::compact>(rs);
+            auto constexpr ti = detail::rangeTypeIdentifier<detail::RangeType::cataloged_string,
+                                                            detail::RangeLayout::compact>(rs);
 
             printer.printHelper(ti);
 #ifdef __clang__
@@ -367,16 +399,20 @@ struct formatter<sc::StringConstant<chars...>> {
 template<std::size_t N>
 struct formatter<char const (&)[N]> {
     template<typename Printer>
-    constexpr auto format(char const (&v)[N], Printer& printer) const {
+    constexpr auto format(char const (&v)[N],
+                          Printer& printer) const {
         return formatter<std::string_view>{}.format(std::string_view{v, N - 1}, printer);
     }
 };
 
 template<typename T>
-    requires std::is_enum_v<T> && (!std::is_same_v<std::byte, T>)
+    requires std::is_enum_v<T>
+          && (!std::is_same_v<std::byte,
+                              T>)
 struct formatter<T> {
     template<typename Printer>
-    constexpr auto format(T const& v, Printer& printer) const {
+    constexpr auto format(T const& v,
+                          Printer& printer) const {
         auto as_int = [&]() {
             using underlying_t = std::underlying_type_t<T>;
 
@@ -409,7 +445,8 @@ struct formatter<T> {
 template<detail::is_range_but_not_string_like T>
 struct formatter<T> {
     template<typename Printer>
-    constexpr auto format(T const& v, Printer& printer) const {
+    constexpr auto format(T const& v,
+                          Printer& printer) const {
         auto constexpr rt = detail::is_map<T> ? detail::RangeType::map
                           : detail::is_set<T> ? detail::RangeType::set
                                               : detail::RangeType::list;
@@ -422,9 +459,11 @@ struct formatter<T> {
 
         auto const size = std::ranges::size(v);
         auto const rs   = detail::sizeToRangeSize(size);
-        auto const ti   = detail::rangeTypeIdentifier < rt,
-                   is_trivial_formatable ? detail::RangeLayout::compact
-                                           : detail::RangeLayout::on_ti_each > (rs);
+        auto const ti
+          = detail::rangeTypeIdentifier<rt,
+                                        is_trivial_formatable ? detail::RangeLayout::compact
+                                                              : detail::RangeLayout::on_ti_each>(
+            rs);
 
         printer.printHelper(ti);
 
@@ -457,35 +496,34 @@ struct formatter<T> {
 template<detail::is_tuple_like_but_not_range T>
 struct formatter<T> {
     template<typename Printer>
-    constexpr auto format(T const& v, Printer& printer) const {
+    constexpr auto format(T const& v,
+                          Printer& printer) const {
         constexpr auto rs = detail::sizeToRangeSize(std::tuple_size_v<T>);
         constexpr auto ti
           = detail::rangeTypeIdentifier<detail::RangeType::tuple, detail::RangeLayout::on_ti_each>(
             rs);
 
-        printer.printHelper(
-          ti,
-          static_cast<detail::rangeSize_unsigned_t<rs>>(std::tuple_size_v<T>));
+        printer.printHelper(ti,
+                            static_cast<detail::rangeSize_unsigned_t<rs>>(std::tuple_size_v<T>));
 
         [&]<std::size_t... Is>(std::index_sequence<Is...>) {
             using std::get;
-            (formatter<std::remove_cvref_t<std::tuple_element_t<Is, T>>>{}.format(
-               get<Is>(v),
-               printer),
+            (formatter<std::remove_cvref_t<std::tuple_element_t<Is, T>>>{}.format(get<Is>(v),
+                                                                                  printer),
              ...);
-        }
-        (std::make_index_sequence<std::tuple_size_v<T>>{});
+        }(std::make_index_sequence<std::tuple_size_v<T>>{});
     }
 };
 
 template<typename T>
 struct formatter<std::optional<T>> {
     template<typename Printer>
-    constexpr auto format(std::optional<T> const& v, Printer& printer) const {
+    constexpr auto format(std::optional<T> const& v,
+                          Printer&                printer) const {
         detail::appendExtendedTypeIdentifier<detail::ExtendedTypeIdentifier::optional>(
           [&](auto const&... vs) { printer.printHelper(vs...); });
 
-        printer.printHelper(static_cast<std::uint8_t>(v.has_value()?1:0));
+        printer.printHelper(static_cast<std::uint8_t>(v.has_value() ? 1 : 0));
 
         if(v) {
             return formatter<std::remove_cvref_t<T>>{}.format(*v, printer);
@@ -496,7 +534,8 @@ struct formatter<std::optional<T>> {
 template<typename... Ts>
 struct formatter<std::variant<Ts...>> {
     template<typename Printer>
-    constexpr auto format(std::variant<Ts...> const& v, Printer& printer) const {
+    constexpr auto format(std::variant<Ts...> const& v,
+                          Printer&                   printer) const {
         return std::visit(
           [&]<typename T>(T const& vv) {
               return formatter<std::remove_cvref_t<T>>{}.format(vv, printer);
@@ -509,7 +548,8 @@ struct formatter<std::variant<Ts...>> {
 template<typename T>
 struct formatter<fmt::detail::styled_arg<T>> {
     template<typename Printer>
-    constexpr auto format(fmt::detail::styled_arg<T> const& v, Printer& printer) const {
+    constexpr auto format(fmt::detail::styled_arg<T> const& v,
+                          Printer&                          printer) const {
         detail::appendExtendedTypeIdentifier<detail::ExtendedTypeIdentifier::styled>(
           [&](auto const&... vs) { printer.printHelper(vs...); });
 
@@ -560,9 +600,12 @@ struct formatter<fmt::detail::styled_arg<T>> {
 };
 #endif
 
-template<typename Printer, char... chars, typename... Args>
-static constexpr auto
-format_to(Printer& printer, sc::StringConstant<chars...> fmt, Args&&... args) {
+template<typename Printer,
+         char... chars,
+         typename... Args>
+static constexpr auto format_to(Printer&                     printer,
+                                sc::StringConstant<chars...> fmt,
+                                Args&&... args) {
     checkFormatString<decltype(args)...>(fmt);
     return printer.format(fmt, std::forward<Args>(args)...);
 }
@@ -593,17 +636,21 @@ private:
     template<typename T>
     friend struct formatter;
 
-    template<typename Printer, char... chars, typename... Args>
-    friend constexpr auto
-    format_to(Printer& printer, sc::StringConstant<chars...> fmt, Args&&... args);
+    template<typename Printer,
+             char... chars,
+             typename... Args>
+    friend constexpr auto format_to(Printer&                     printer,
+                                    sc::StringConstant<chars...> fmt,
+                                    Args&&... args);
 
     constexpr Printer& out() { return *this; }
 
-    template<
-      detail::FmtStringType ft = detail::maybeCataloged<detail::FmtStringType::cataloged_sub>(),
-      char... chars,
-      typename... Args>
-    constexpr void format(sc::StringConstant<chars...> fmt, Args&&... args) {
+    template<detail::FmtStringType ft
+             = detail::maybeCataloged<detail::FmtStringType::cataloged_sub>(),
+             char... chars,
+             typename... Args>
+    constexpr void format(sc::StringConstant<chars...> fmt,
+                          Args&&... args) {
         checkFormatString<decltype(args)...>(fmt);
 
         if constexpr(ft == detail::FmtStringType::sub || ft == detail::FmtStringType::normal) {
@@ -640,15 +687,18 @@ public:
     constexpr Printer() = default;
 
     template<typename Cb>
-        requires std::is_same_v<std::remove_cvref_t<Cb>, std::remove_cvref_t<ComBackend>>
+        requires std::is_same_v<std::remove_cvref_t<Cb>,
+                                std::remove_cvref_t<ComBackend>>
     constexpr explicit Printer(Cb&& cb) : comBackend{std::forward<Cb>(cb)} {}
 
     ComBackend const& get_com_backend() const { return comBackend; }
 
     ComBackend& get_com_backend() { return comBackend; }
 
-    template<char... chars, typename... Args>
-    constexpr void print(sc::StringConstant<chars...> fmt, Args&&... args) {
+    template<char... chars,
+             typename... Args>
+    constexpr void print(sc::StringConstant<chars...> fmt,
+                         Args&&... args) {
         checkFormatString<decltype(args)...>(fmt);
 
         if constexpr(requires { ComBackend::initTransfer(); }) {
@@ -657,11 +707,11 @@ public:
             comBackend.initTransfer();
         }
 
-        printHelper(std::byte{0x55});
+        printHelper(protocol::Start_marker);
         format<detail::maybeCataloged<detail::FmtStringType::cataloged_normal>()>(
           fmt,
           std::forward<Args>(args)...);
-        printHelper(std::byte{0xAA});
+        printHelper(protocol::End_marker);
 
         if constexpr(requires { ComBackend::finalizeTransfer(); }) {
             ComBackend::finalizeTransfer();
@@ -670,8 +720,10 @@ public:
         }
     }
 
-    template<char... chars, typename... Args>
-    static constexpr void staticPrint(sc::StringConstant<chars...> fmt, Args&&... args) {
+    template<char... chars,
+             typename... Args>
+    static constexpr void staticPrint(sc::StringConstant<chars...> fmt,
+                                      Args&&... args) {
         checkFormatString<decltype(args)...>(fmt);
         static_assert(
           requires { ComBackend::write(std::span<std::byte const>{}); },

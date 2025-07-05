@@ -66,7 +66,7 @@ This catalog code can be generated in the toolchain with a python script.
 Another difference is the function call of the `remote_fmt::parse(...)` function. In this example the function is called with a catalog.
 
 #### Catalog Generator Example
-In this examlpe the usage of the catalog generator is covered [examples/basic_usage.cpp](examples/basic_usage.cpp).
+In this example the usage of the catalog generator is covered [examples/basic_usage.cpp](examples/basic_usage.cpp).
 
 To use the catalog generator you must have installed python on your computer. The generator can be called in the `CMakeLists.txt` of your project with the following function:
 

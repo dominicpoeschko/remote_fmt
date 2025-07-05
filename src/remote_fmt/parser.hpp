@@ -1,8 +1,28 @@
 #pragma once
 
+#include "remote_fmt/fmt_wrapper.hpp"
 #include "remote_fmt/remote_fmt.hpp"
 #include "remote_fmt/type_identifier.hpp"
-#include "remote_fmt/fmt_wrapper.hpp"
+
+#ifdef __GNUC__
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wextra-semi"
+#endif
+
+#ifdef __clang__
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
+#endif
+
+#include <magic_enum/magic_enum.hpp>
+#include <magic_enum/magic_enum_switch.hpp>
+
+#ifdef __GNUC__
+    #pragma GCC diagnostic pop
+#endif
+#ifdef __clang__
+    #pragma clang diagnostic pop
+#endif
 
 #include <algorithm>
 #include <cassert>
@@ -11,14 +31,13 @@
 #include <functional>
 #include <iomanip>
 #include <iterator>
-#include <magic_enum/magic_enum.hpp>
-#include <magic_enum/magic_enum_switch.hpp>
 #include <map>
 #include <optional>
 #include <ratio>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -40,15 +59,16 @@ namespace detail {
 
     template<>
     struct ExtendedTypeIdentifierParser<ExtendedTypeIdentifier::styled> {
-        template<typename It, typename Parser>
-        static ParseResult<It> parse(
-          It                                          first,
-          It                                          last,
-          std::string_view                            replacementField,
-          bool                                        in_map,
-          bool                                        in_list,
-          std::map<std::uint16_t, std::string> const& stringConstantsMap,
-          Parser&                                     parser) {
+        template<typename It,
+                 typename Parser>
+        static ParseResult<It> parse(It                                     first,
+                                     It                                     last,
+                                     std::string_view                       replacementField,
+                                     bool                                   in_map,
+                                     bool                                   in_list,
+                                     std::unordered_map<std::uint16_t,
+                                                        std::string> const& stringConstantsMap,
+                                     Parser&                                parser) {
             if(1 > static_cast<std::size_t>(std::distance(first, last))) {
                 return std::nullopt;
             }
@@ -103,13 +123,12 @@ namespace detail {
                 style |= fmt::text_style{static_cast<fmt::emphasis>(emp_value)};
             }
 
-            auto const inner_result = parser.parseFromTypeId(
-              first,
-              last,
-              replacementField,
-              in_list,
-              in_map,
-              stringConstantsMap);
+            auto const inner_result = parser.parseFromTypeId(first,
+                                                             last,
+                                                             replacementField,
+                                                             in_list,
+                                                             in_map,
+                                                             stringConstantsMap);
 
             if(!inner_result) {
                 return std::nullopt;
@@ -122,15 +141,16 @@ namespace detail {
 
     template<>
     struct ExtendedTypeIdentifierParser<ExtendedTypeIdentifier::optional> {
-        template<typename It, typename Parser>
-        static ParseResult<It> parse(
-          It                                          first,
-          It                                          last,
-          std::string_view                            replacementField,
-          bool                                        in_map,
-          bool                                        in_list,
-          std::map<std::uint16_t, std::string> const& stringConstantsMap,
-          Parser&                                     parser) {
+        template<typename It,
+                 typename Parser>
+        static ParseResult<It> parse(It                                     first,
+                                     It                                     last,
+                                     std::string_view                       replacementField,
+                                     bool                                   in_map,
+                                     bool                                   in_list,
+                                     std::unordered_map<std::uint16_t,
+                                                        std::string> const& stringConstantsMap,
+                                     Parser&                                parser) {
             if(1 > static_cast<std::size_t>(std::distance(first, last))) {
                 return std::nullopt;
             }
@@ -144,13 +164,12 @@ namespace detail {
             if(isSet == 0) {
                 return ParseResult_<It>{"()", first};
             }
-            auto const inner_result = parser.parseFromTypeId(
-              first,
-              last,
-              replacementField,
-              in_list,
-              in_map,
-              stringConstantsMap);
+            auto const inner_result = parser.parseFromTypeId(first,
+                                                             last,
+                                                             replacementField,
+                                                             in_list,
+                                                             in_map,
+                                                             stringConstantsMap);
 
             if(!inner_result) {
                 return std::nullopt;
@@ -166,9 +185,9 @@ namespace detail {
         Parser(ErrorMessageF&& errorMessagef_)
           : errorMessagef{std::forward<ErrorMessageF>(errorMessagef_)} {}
 
-        std::optional<std::string_view> getNextReplacementFieldFromFmtStringAndAppendStrings(
-          std::string&      out,
-          std::string_view& fmtString) {
+        std::optional<std::string_view>
+        getNextReplacementFieldFromFmtStringAndAppendStrings(std::string&      out,
+                                                             std::string_view& fmtString) {
             while(!fmtString.empty()) {
                 auto const curlyPos = std::find_if(fmtString.begin(), fmtString.end(), [](auto c) {
                     return c == '{' || c == '}';
@@ -180,11 +199,11 @@ namespace detail {
                     return std::nullopt;
                 }
 
-                assert(curlyPos + 1 != fmtString.end());
+                assert(std::next(curlyPos) != fmtString.end());
 
-                if(*(curlyPos + 1) == *curlyPos) {
-                    out += std::string_view{fmtString.begin(), curlyPos + 1};
-                    fmtString = std::string_view{curlyPos + 2, fmtString.end()};
+                if(*(std::next(curlyPos)) == *curlyPos) {
+                    out += std::string_view{fmtString.begin(), std::next(curlyPos)};
+                    fmtString = std::string_view{std::next(curlyPos, 2), fmtString.end()};
                     continue;
                 }
 
@@ -193,82 +212,107 @@ namespace detail {
                 assert(closeCurlyPos != fmtString.end());
 
                 out += std::string_view{fmtString.begin(), curlyPos};
-                fmtString = std::string_view{closeCurlyPos + 1, fmtString.end()};
-                return std::string_view{curlyPos, closeCurlyPos + 1};
+                fmtString = std::string_view{std::next(closeCurlyPos), fmtString.end()};
+                return std::string_view{curlyPos, std::next(closeCurlyPos)};
             }
             return std::nullopt;
         }
 
-        using trival_t
+        using trivial_t
           = std::variant<std::uint64_t, std::int64_t, bool, char, void const*, float, double>;
 
-        template<typename T, typename It>
-        T extract(It first) {
+        template<typename T,
+                 typename It>
+        T extract(It first,
+                  It last) {
+            static_assert(std::is_trivially_copyable_v<T>, "T must be trivially copyable");
+            if(static_cast<std::size_t>(std::distance(first, last)) < sizeof(T)) {
+                throw std::runtime_error("Insufficient data for extraction");
+            }
             T v;
             std::memcpy(&v, &*first, sizeof(T));
             return v;
         }
+
         template<typename It>
-        std::optional<std::variant<double, float>> extractFloatingpoint(It first, TypeSize ts) {
+        std::optional<std::variant<double,
+                                   float>>
+        extractFloatingpoint(It       first,
+                             It       last,
+                             TypeSize ts) {
             if(ts == TypeSize::_4) {
-                return extract<float>(first);
+                return extract<float>(first, last);
             }
             if(ts == TypeSize::_8) {
-                return extract<double>(first);
+                return extract<double>(first, last);
             }
             return std::nullopt;
         }
 
         template<typename It>
-        std::optional<std::uint64_t> extractUnsigned(It first, TypeSize ts) {
+        std::optional<std::uint64_t> extractUnsigned(It       first,
+                                                     It       last,
+                                                     TypeSize ts) {
             switch(ts) {
-            case TypeSize::_1: return extract<std::uint8_t>(first);
-            case TypeSize::_2: return extract<std::uint16_t>(first);
-            case TypeSize::_4: return extract<std::uint32_t>(first);
-            case TypeSize::_8: return extract<std::uint64_t>(first);
+            case TypeSize::_1: return extract<std::uint8_t>(first, last);
+            case TypeSize::_2: return extract<std::uint16_t>(first, last);
+            case TypeSize::_4: return extract<std::uint32_t>(first, last);
+            case TypeSize::_8: return extract<std::uint64_t>(first, last);
             }
             return std::nullopt;
         }
 
         template<typename It>
-        std::optional<std::pair<std::size_t, It>> extractSize(It first, It last, TypeSize ts) {
+        std::optional<std::pair<std::size_t,
+                                It>>
+        extractSize(It       first,
+                    It       last,
+                    TypeSize ts) {
             auto const bs = byteSize(ts);
 
             if(bs > static_cast<std::size_t>(std::distance(first, last))) {
                 return std::nullopt;
             }
 
-            auto oSize = extractUnsigned(first, ts);
-            if(!oSize) {
+            auto optionalSize = extractUnsigned(first, last, ts);
+            if(!optionalSize) {
                 return std::nullopt;
             }
 
             return {
-              {static_cast<std::size_t>(*oSize),
+              {static_cast<std::size_t>(*optionalSize),
                std::next(first, static_cast<std::make_signed_t<std::size_t>>(bs))}
             };
         }
 
         template<typename It>
-        std::optional<std::int64_t> extractSigned(It first, TypeSize ts) {
+        std::optional<std::int64_t> extractSigned(It       first,
+                                                  It       last,
+                                                  TypeSize ts) {
             switch(ts) {
-            case TypeSize::_1: return extract<std::int8_t>(first);
-            case TypeSize::_2: return extract<std::int16_t>(first);
-            case TypeSize::_4: return extract<std::int32_t>(first);
-            case TypeSize::_8: return extract<std::int64_t>(first);
+            case TypeSize::_1: return extract<std::int8_t>(first, last);
+            case TypeSize::_2: return extract<std::int16_t>(first, last);
+            case TypeSize::_4: return extract<std::int32_t>(first, last);
+            case TypeSize::_8: return extract<std::int64_t>(first, last);
             }
             return std::nullopt;
         }
+
         template<typename It>
-        std::optional<char> extractCharacter(It first, TypeSize ts) {
+        std::optional<char> extractCharacter(It       first,
+                                             It       last,
+                                             TypeSize ts) {
             if(ts == TypeSize::_1) {
-                return extract<char>(first);
+                return extract<char>(first, last);
             }
             return std::nullopt;
         }
+
         template<typename It>
-        std::optional<bool> extractBoolean(It first, TypeSize ts) {
-            auto const oU = extractUnsigned(first, ts);
+        std::optional<bool> extractBoolean(It       first,
+                                           It       last,
+                                           TypeSize ts) {
+            auto const oU = extractUnsigned(first, last, ts);
             if(!oU) {
                 return std::nullopt;
             }
@@ -277,9 +321,12 @@ namespace detail {
             }
             return false;
         }
+
         template<typename It>
-        std::optional<void const*> extractPointer(It first, TypeSize ts) {
-            auto const oU = extractUnsigned(first, ts);
+        std::optional<void const*> extractPointer(It       first,
+                                                  It       last,
+                                                  TypeSize ts) {
+            auto const oU = extractUnsigned(first, last, ts);
             if(!oU) {
                 return std::nullopt;
             }
@@ -287,51 +334,54 @@ namespace detail {
         }
 
         template<typename It>
-        std::optional<std::pair<trival_t, It>>
-        extractTrivial(It first, It last, TrivialType tt, TypeSize ts) {
+        std::optional<std::pair<trivial_t,
+                                It>>
+        extractTrivial(It          first,
+                       It          last,
+                       TrivialType tt,
+                       TypeSize    ts) {
             auto const bs = byteSize(ts);
             if(bs > static_cast<std::size_t>(std::distance(first, last))) {
                 return std::nullopt;
             }
-            std::optional<trival_t> ot;
+            std::optional<trivial_t> optionalTrivial;
             switch(tt) {
-            case TrivialType::unsigned_: ot = extractUnsigned(first, ts); break;
-            case TrivialType::signed_: ot = extractSigned(first, ts); break;
-            case TrivialType::boolean: ot = extractBoolean(first, ts); break;
-            case TrivialType::character: ot = extractCharacter(first, ts); break;
-            case TrivialType::pointer: ot = extractPointer(first, ts); break;
+            case TrivialType::unsigned_: optionalTrivial = extractUnsigned(first, last, ts); break;
+            case TrivialType::signed_:   optionalTrivial = extractSigned(first, last, ts); break;
+            case TrivialType::boolean:   optionalTrivial = extractBoolean(first, last, ts); break;
+            case TrivialType::character: optionalTrivial = extractCharacter(first, last, ts); break;
+            case TrivialType::pointer:   optionalTrivial = extractPointer(first, last, ts); break;
             case TrivialType::floatingpoint:
                 {
-                    auto of = extractFloatingpoint(first, ts);
+                    auto of = extractFloatingpoint(first, last, ts);
                     if(!of) {
                         return std::nullopt;
                     }
-                    std::visit([&](auto v) { ot = v; }, *of);
+                    std::visit([&](auto v) { optionalTrivial = v; }, *of);
                 }
                 break;
             }
-            if(!ot) {
+            if(!optionalTrivial) {
                 return std::nullopt;
             }
             first += static_cast<std::make_signed_t<std::size_t>>(bs);
             return {
-              {*ot, first}
+              {*optionalTrivial, first}
             };
         }
 
         template<typename It>
-        ParseResult<It> extractAndFormatTrivial(
-          It               first,
-          It               last,
-          std::string_view replacementField,
-          TrivialType      tt,
-          TypeSize         ts) {
-            auto const ot = extractTrivial(first, last, tt, ts);
-            if(!ot) {
+        ParseResult<It> extractAndFormatTrivial(It               first,
+                                                It               last,
+                                                std::string_view replacementField,
+                                                TrivialType      tt,
+                                                TypeSize         ts) {
+            auto const optionalTrivial = extractTrivial(first, last, tt, ts);
+            if(!optionalTrivial) {
                 return std::nullopt;
             }
-            first         = ot->second;
-            auto const os = std::visit(
+            first                  = optionalTrivial->second;
+            auto const optionalStr = std::visit(
               [&](auto const& v) -> std::optional<std::string> {
                   try {
                       return fmt::format(fmt::runtime(replacementField), v);
@@ -340,32 +390,35 @@ namespace detail {
                       return std::nullopt;
                   }
               },
-              ot->first);
-            if(!os) {
+              optionalTrivial->first);
+            if(!optionalStr) {
                 return std::nullopt;
             }
             return {
-              {*os, first}
+              {*optionalStr, first}
             };
         }
 
         template<typename It>
-        ParseResult<It> parseTrivial(It first, It last, std::string_view replacementField) {
+        ParseResult<It> parseTrivial(It               first,
+                                     It               last,
+                                     std::string_view replacementField) {
             if(first == last) {
                 return std::nullopt;
             }
-            auto const otti = parseTrivialTypeIdentifier(*first);
-            if(!otti) {
+            auto const trivialTypeId = parseTrivialTypeIdentifier(*first);
+            if(!trivialTypeId) {
                 return std::nullopt;
             }
             ++first;
-            auto const [tt, ts] = *otti;
+            auto const [tt, ts] = *trivialTypeId;
             return extractAndFormatTrivial(first, last, replacementField, tt, ts);
         }
 
         template<typename Ratio>
-        std::optional<std::string>
-        formatTimeFixedRatio(std::int64_t value, TimeType tt, std::string_view replacementField) {
+        std::optional<std::string> formatTimeFixedRatio(std::int64_t     value,
+                                                        TimeType         tt,
+                                                        std::string_view replacementField) {
             using duration = std::chrono::duration<std::int64_t, Ratio>;
             try {
                 if(tt == TimeType::duration) {
@@ -377,40 +430,38 @@ namespace detail {
             return std::nullopt;
         }
 
-        std::optional<std::string> formatTime(
-          std::uint64_t    num,
-          std::uint64_t    den,
-          std::int64_t     value,
-          TimeType         tt,
-          std::string_view replacementField) {
-            using std_ratios = std::tuple<
-              std::atto,
-              std::femto,
-              std::pico,
-              std::nano,
-              std::micro,
-              std::milli,
-              std::centi,
-              std::ratio<1>,
-              std::deci,
-              std::deca,
-              std::hecto,
-              std::kilo,
-              std::mega,
-              std::giga,
-              std::tera,
-              std::peta,
-              std::exa,
-              std::chrono::nanoseconds::period,
-              std::chrono::microseconds::period,
-              std::chrono::milliseconds::period,
-              std::chrono::seconds::period,
-              std::chrono::minutes::period,
-              std::chrono::hours::period,
-              std::chrono::days::period,
-              std::chrono::weeks::period,
-              std::chrono::months::period,
-              std::chrono::years::period>;
+        std::optional<std::string> formatTime(std::uint64_t    num,
+                                              std::uint64_t    den,
+                                              std::int64_t     value,
+                                              TimeType         tt,
+                                              std::string_view replacementField) {
+            using std_ratios = std::tuple<std::atto,
+                                          std::femto,
+                                          std::pico,
+                                          std::nano,
+                                          std::micro,
+                                          std::milli,
+                                          std::centi,
+                                          std::ratio<1>,
+                                          std::deci,
+                                          std::deca,
+                                          std::hecto,
+                                          std::kilo,
+                                          std::mega,
+                                          std::giga,
+                                          std::tera,
+                                          std::peta,
+                                          std::exa,
+                                          std::chrono::nanoseconds::period,
+                                          std::chrono::microseconds::period,
+                                          std::chrono::milliseconds::period,
+                                          std::chrono::seconds::period,
+                                          std::chrono::minutes::period,
+                                          std::chrono::hours::period,
+                                          std::chrono::days::period,
+                                          std::chrono::weeks::period,
+                                          std::chrono::months::period,
+                                          std::chrono::years::period>;
 
             std::optional<std::string> oStr;
             bool                       failed = false;
@@ -453,7 +504,7 @@ namespace detail {
                 return fmt::format("[{}/{}]s", num, den);
             }
 
-            //TODO not correct but otherwhise the replacementField needs to be parsed further...
+            //TODO not correct but otherwise the replacementField needs to be parsed further...
             try {
                 auto const dur = std::chrono::duration<double>{
                   (static_cast<double>(value) * static_cast<double>(num))
@@ -466,52 +517,55 @@ namespace detail {
         }
 
         template<typename It>
-        ParseResult<It> parseTime(It first, It last, std::string_view replacementField) {
+        ParseResult<It> parseTime(It               first,
+                                  It               last,
+                                  std::string_view replacementField) {
             if(first == last) {
                 return std::nullopt;
             }
-            auto const otti = parseTimeTypeIdentifier(*first);
-            if(!otti) {
+            auto const trivialTypeId = parseTimeTypeIdentifier(*first);
+            if(!trivialTypeId) {
                 return std::nullopt;
             }
             ++first;
-            auto const [tt, num_ts, den_ts, ts] = *otti;
+            auto const [tt, num_ts, den_ts, ts] = *trivialTypeId;
 
             auto const bs = byteSize(num_ts) + byteSize(den_ts) + byteSize(ts);
             if(bs > static_cast<std::size_t>(std::distance(first, last))) {
                 return std::nullopt;
             }
 
-            std::uint64_t const num = *extractUnsigned(first, num_ts);
+            std::uint64_t const num = *extractUnsigned(first, last, num_ts);
             first += static_cast<std::make_signed_t<std::size_t>>(byteSize(num_ts));
-            std::uint64_t const den = *extractUnsigned(first, den_ts);
+            std::uint64_t const den = *extractUnsigned(first, last, den_ts);
             first += static_cast<std::make_signed_t<std::size_t>>(byteSize(den_ts));
-            std::int64_t const value = *extractSigned(first, timeSizeToTypeSize(ts));
+            std::int64_t const value = *extractSigned(first, last, timeSizeToTypeSize(ts));
             first += static_cast<std::make_signed_t<std::size_t>>(byteSize(ts));
 
             if(den == 0 || num == 0) {
                 return std::nullopt;
             }
 
-            auto const ot = formatTime(num, den, value, tt, replacementField);
-            if(!ot) {
+            auto const optionalTrivial = formatTime(num, den, value, tt, replacementField);
+            if(!optionalTrivial) {
                 return std::nullopt;
             }
 
             return {
-              {*ot, first}
+              {*optionalTrivial, first}
             };
         }
 
         template<typename It>
-        ParseResult<It> parseCatalogedString(
-          It first,
-          It,
-          std::size_t                                 size,
-          RangeLayout                                 rl,
-          std::string_view                            replacementField,
-          bool                                        in_list,
-          std::map<std::uint16_t, std::string> const& stringConstantsMap) {
+        ParseResult<It>
+        parseCatalogedString(It first,
+                             It,
+                             std::size_t                            size,
+                             RangeLayout                            rl,
+                             std::string_view                       replacementField,
+                             bool                                   in_list,
+                             std::unordered_map<std::uint16_t,
+                                                std::string> const& stringConstantsMap) {
             if(rl != RangeLayout::compact) {
                 return std::nullopt;
             }
@@ -527,9 +581,8 @@ namespace detail {
             try {
                 auto const ret = [&]() {
                     if(in_list) {
-                        return fmt::format(
-                          fmt::runtime(replacementField),
-                          (std::stringstream{} << std::quoted(s)).str());
+                        return fmt::format(fmt::runtime(replacementField),
+                                           (std::stringstream{} << std::quoted(s)).str());
                     }
                     return fmt::format(fmt::runtime(replacementField), s);
                 }();
@@ -543,13 +596,12 @@ namespace detail {
         }
 
         template<typename It>
-        ParseResult<It> parseString(
-          It               first,
-          It               last,
-          std::size_t      size,
-          RangeLayout      rl,
-          std::string_view replacementField,
-          bool             in_list) {
+        ParseResult<It> parseString(It               first,
+                                    It               last,
+                                    std::size_t      size,
+                                    RangeLayout      rl,
+                                    std::string_view replacementField,
+                                    bool             in_list) {
             if(size > static_cast<std::size_t>(std::distance(first, last))) {
                 return std::nullopt;
             }
@@ -568,9 +620,8 @@ namespace detail {
             try {
                 auto const ret = [&]() {
                     if(in_list) {
-                        return fmt::format(
-                          fmt::runtime(replacementField),
-                          (std::stringstream{} << std::quoted(s)).str());
+                        return fmt::format(fmt::runtime(replacementField),
+                                           (std::stringstream{} << std::quoted(s)).str());
                     }
                     return fmt::format(fmt::runtime(replacementField), s);
                 }();
@@ -584,17 +635,18 @@ namespace detail {
         }
 
         template<typename It>
-        ParseResult<It> parseExtendedTypeIdentifier(
-          It                                          first,
-          It                                          last,
-          std::size_t                                 size,
-          std::string_view                            replacementField,
-          bool                                        in_map,
-          bool                                        in_list,
-          std::map<std::uint16_t, std::string> const& stringConstantsMap) {
-            if(
-              size > std::numeric_limits<std::underlying_type_t<ExtendedTypeIdentifier>>::max()
-              || !magic_enum::enum_contains<ExtendedTypeIdentifier>(size))
+        ParseResult<It>
+        parseExtendedTypeIdentifier(It                                     first,
+                                    It                                     last,
+                                    std::size_t                            size,
+                                    std::string_view                       replacementField,
+                                    bool                                   in_map,
+                                    bool                                   in_list,
+                                    std::unordered_map<std::uint16_t,
+                                                       std::string> const& stringConstantsMap) {
+            if(size > std::numeric_limits<std::underlying_type_t<ExtendedTypeIdentifier>>::max()
+               || !magic_enum::enum_contains<ExtendedTypeIdentifier>(
+                 static_cast<std::underlying_type_t<ExtendedTypeIdentifier>>(size)))
             {
                 return std::nullopt;
             }
@@ -602,14 +654,13 @@ namespace detail {
             return magic_enum::enum_switch(
               [&](auto e) {
                   static constexpr ExtendedTypeIdentifier eti = e;
-                  return ExtendedTypeIdentifierParser<eti>::parse(
-                    first,
-                    last,
-                    replacementField,
-                    in_map,
-                    in_list,
-                    stringConstantsMap,
-                    *this);
+                  return ExtendedTypeIdentifierParser<eti>::parse(first,
+                                                                  last,
+                                                                  replacementField,
+                                                                  in_map,
+                                                                  in_list,
+                                                                  stringConstantsMap,
+                                                                  *this);
               },
               magic_enum::enum_value<ExtendedTypeIdentifier>(size));
         }
@@ -643,14 +694,14 @@ namespace detail {
         }
 
         template<typename It>
-        ParseResult<It> parseTuple(
-          It                                          first,
-          It                                          last,
-          std::size_t                                 size,
-          RangeLayout                                 rl,
-          std::string_view                            replacementField,
-          bool                                        in_map,
-          std::map<std::uint16_t, std::string> const& stringConstantsMap) {
+        ParseResult<It> parseTuple(It                                     first,
+                                   It                                     last,
+                                   std::size_t                            size,
+                                   RangeLayout                            rl,
+                                   std::string_view                       replacementField,
+                                   bool                                   in_map,
+                                   std::unordered_map<std::uint16_t,
+                                                      std::string> const& stringConstantsMap) {
             if(rl != RangeLayout::on_ti_each) {
                 return std::nullopt;
             }
@@ -671,18 +722,17 @@ namespace detail {
 
             std::string s = printParenthesis ? "(" : "";
             while(size != 0 && first != last) {
-                auto const os = parseFromTypeId(
-                  first,
-                  last,
-                  childReplacementField,
-                  true,
-                  false,
-                  stringConstantsMap);
-                if(!os) {
+                auto const optionalStr = parseFromTypeId(first,
+                                                         last,
+                                                         childReplacementField,
+                                                         true,
+                                                         false,
+                                                         stringConstantsMap);
+                if(!optionalStr) {
                     return std::nullopt;
                 }
-                s += os->str;
-                first = os->pos;
+                s += optionalStr->str;
+                first = optionalStr->pos;
                 --size;
                 if(size != 0) {
                     if(in_map || rangeReplacementField.find('m') != std::string_view::npos) {
@@ -705,14 +755,14 @@ namespace detail {
         }
 
         template<typename It>
-        ParseResult<It> parseList(
-          It                                          first,
-          It                                          last,
-          std::size_t                                 size,
-          RangeLayout                                 rl,
-          std::string_view                            replacementField,
-          RangeType                                   rt,
-          std::map<std::uint16_t, std::string> const& stringConstantsMap) {
+        ParseResult<It> parseList(It                                     first,
+                                  It                                     last,
+                                  std::size_t                            size,
+                                  RangeLayout                            rl,
+                                  std::string_view                       replacementField,
+                                  RangeType                              rt,
+                                  std::unordered_map<std::uint16_t,
+                                                     std::string> const& stringConstantsMap) {
             auto const oRangeRepField = fixRangeReplacementField(replacementField);
             if(!oRangeRepField) {
                 return std::nullopt;
@@ -722,12 +772,14 @@ namespace detail {
             bool const printParenthesis = rangeReplacementField.find('n') == std::string_view::npos;
 
             std::string s = printParenthesis ? rt == RangeType::list ? "[" : "{" : "";
+            // Reserve space to reduce reallocations during string building
+            s.reserve(size * 10 + (printParenthesis ? 2 : 0));   // Rough estimate
 
-            std::optional<std::tuple<TrivialType, TypeSize>> otti;
+            std::optional<std::tuple<TrivialType, TypeSize>> trivialTypeId;
 
             if(rl == RangeLayout::compact && size != 0 && first != last) {
-                otti = parseTrivialTypeIdentifier(*first);
-                if(!otti) {
+                trivialTypeId = parseTrivialTypeIdentifier(*first);
+                if(!trivialTypeId) {
                     return std::nullopt;
                 }
 
@@ -735,25 +787,25 @@ namespace detail {
             }
 
             while(size != 0 && first != last) {
-                auto const os = [&]() {
+                auto const optionalStr = [&]() {
                     if(rl == RangeLayout::compact) {
-                        auto [tt, ts] = *otti;
+                        auto [tt, ts] = *trivialTypeId;
                         return extractAndFormatTrivial(first, last, childReplacementField, tt, ts);
                     }
-                    return parseFromTypeId(
-                      first,
-                      last,
-                      childReplacementField,
-                      true,
-                      rt == RangeType::map
-                        || rangeReplacementField.find('m') != std::string_view::npos,
-                      stringConstantsMap);
+                    return parseFromTypeId(first,
+                                           last,
+                                           childReplacementField,
+                                           true,
+                                           rt == RangeType::map
+                                             || rangeReplacementField.find('m')
+                                                  != std::string_view::npos,
+                                           stringConstantsMap);
                 }();
-                if(!os) {
+                if(!optionalStr) {
                     return std::nullopt;
                 }
-                s += os->str;
-                first = os->pos;
+                s += optionalStr->str;
+                first = optionalStr->pos;
                 --size;
                 if(size != 0) {
                     s += ", ";
@@ -772,123 +824,118 @@ namespace detail {
         }
 
         template<typename It>
-        ParseResult<It> parseRange(
-          It                                          first,
-          It                                          last,
-          std::string_view                            replacementField,
-          bool                                        in_list,
-          bool                                        in_map,
-          std::map<std::uint16_t, std::string> const& stringConstantsMap) {
+        ParseResult<It> parseRange(It                                     first,
+                                   It                                     last,
+                                   std::string_view                       replacementField,
+                                   bool                                   in_list,
+                                   bool                                   in_map,
+                                   std::unordered_map<std::uint16_t,
+                                                      std::string> const& stringConstantsMap) {
             if(first == last) {
                 return std::nullopt;
             }
-            auto const orti = parseRangeTypeIdentifier(*first);
-            if(!orti) {
+            auto const rangeTypeId = parseRangeTypeIdentifier(*first);
+            if(!rangeTypeId) {
                 return std::nullopt;
             }
             ++first;
-            auto const [rt, rs, rl] = *orti;
+            auto const [rt, rs, rl] = *rangeTypeId;
 
-            auto oSize = extractSize(first, last, rangeSizeToTypeSize(rs));
-            if(!oSize) {
+            auto optionalSize = extractSize(first, last, rangeSizeToTypeSize(rs));
+            if(!optionalSize) {
                 return std::nullopt;
             }
 
-            first = oSize->second;
+            first = optionalSize->second;
             switch(rt) {
             case RangeType::cataloged_string:
-                return parseCatalogedString(
-                  first,
-                  last,
-                  oSize->first,
-                  rl,
-                  replacementField,
-                  in_list,
-                  stringConstantsMap);
+                return parseCatalogedString(first,
+                                            last,
+                                            optionalSize->first,
+                                            rl,
+                                            replacementField,
+                                            in_list,
+                                            stringConstantsMap);
             case RangeType::string:
-                return parseString(first, last, oSize->first, rl, replacementField, in_list);
+                return parseString(first, last, optionalSize->first, rl, replacementField, in_list);
             case RangeType::tuple:
-                return parseTuple(
-                  first,
-                  last,
-                  oSize->first,
-                  rl,
-                  replacementField,
-                  in_map,
-                  stringConstantsMap);
+                return parseTuple(first,
+                                  last,
+                                  optionalSize->first,
+                                  rl,
+                                  replacementField,
+                                  in_map,
+                                  stringConstantsMap);
             case RangeType::extendedTypeIdentifier:
-                return parseExtendedTypeIdentifier(
-                  first,
-                  last,
-                  oSize->first,
-                  replacementField,
-                  in_map,
-                  in_list,
-                  stringConstantsMap);
+                return parseExtendedTypeIdentifier(first,
+                                                   last,
+                                                   optionalSize->first,
+                                                   replacementField,
+                                                   in_map,
+                                                   in_list,
+                                                   stringConstantsMap);
             case RangeType::map: [[fallthrough]];
             case RangeType::set: [[fallthrough]];
             case RangeType::list:
-                return parseList(
-                  first,
-                  last,
-                  oSize->first,
-                  rl,
-                  replacementField,
-                  rt,
-                  stringConstantsMap);
+                return parseList(first,
+                                 last,
+                                 optionalSize->first,
+                                 rl,
+                                 replacementField,
+                                 rt,
+                                 stringConstantsMap);
             }
 
             return std::nullopt;
         }
 
         template<typename It>
-        ParseResult<It> parseType(
-          It                                          first,
-          It                                          last,
-          std::string_view                            replacementField,
-          bool                                        in_list,
-          bool                                        in_map,
-          std::map<std::uint16_t, std::string> const& stringConstantsMap) {
+        ParseResult<It> parseType(It                                     first,
+                                  It                                     last,
+                                  std::string_view                       replacementField,
+                                  bool                                   in_list,
+                                  bool                                   in_map,
+                                  std::unordered_map<std::uint16_t,
+                                                     std::string> const& stringConstantsMap) {
             if(first == last) {
                 return std::nullopt;
             }
             auto const ti = parseTypeIdentifier(*first);
             switch(ti) {
             case TypeIdentifier::fmt_string: return std::nullopt;
-            case TypeIdentifier::trivial: return parseTrivial(first, last, replacementField);
-            case TypeIdentifier::time: return parseTime(first, last, replacementField);
+            case TypeIdentifier::trivial:    return parseTrivial(first, last, replacementField);
+            case TypeIdentifier::time:       return parseTime(first, last, replacementField);
             case TypeIdentifier::range:
-                return parseRange(
-                  first,
-                  last,
-                  replacementField,
-                  in_list,
-                  in_map,
-                  stringConstantsMap);
+                return parseRange(first,
+                                  last,
+                                  replacementField,
+                                  in_list,
+                                  in_map,
+                                  stringConstantsMap);
             }
             return std::nullopt;
         }
 
         template<typename It>
-        ParseResult<It> parseFmtString(
-          It                                          first,
-          It                                          last,
-          FmtStringType                               type,
-          std::map<std::uint16_t, std::string> const& stringConstantsMap) {
+        ParseResult<It> parseFmtString(It                                     first,
+                                       It                                     last,
+                                       FmtStringType                          type,
+                                       std::unordered_map<std::uint16_t,
+                                                          std::string> const& stringConstantsMap) {
             auto it            = first;
             auto oFmtRangeSize = parseFmtStringTypeIdentifier(*it, type);
             if(!oFmtRangeSize) {
                 return std::nullopt;
             }
             ++it;
-            auto oSize = extractSize(it, last, rangeSizeToTypeSize(*oFmtRangeSize));
-            if(!oSize) {
+            auto optionalSize = extractSize(it, last, rangeSizeToTypeSize(*oFmtRangeSize));
+            if(!optionalSize) {
                 return std::nullopt;
             }
 
-            it = oSize->second;
+            it = optionalSize->second;
 
-            auto const fmtStringSize = oSize->first;
+            auto const fmtStringSize = optionalSize->first;
 
             std::string fmtString;
             if(type == FmtStringType::normal || type == FmtStringType::sub) {
@@ -930,11 +977,11 @@ namespace detail {
         }
 
         template<typename It>
-        ParseResult<It> parseFmt(
-          It                                          first,
-          It                                          last,
-          FmtStringType                               type,
-          std::map<std::uint16_t, std::string> const& stringConstantsMap) {
+        ParseResult<It> parseFmt(It                                     first,
+                                 It                                     last,
+                                 FmtStringType                          type,
+                                 std::unordered_map<std::uint16_t,
+                                                    std::string> const& stringConstantsMap) {
             auto       it         = first;
             auto const oFmtString = parseFmtString(it, last, type, stringConstantsMap);
 
@@ -945,19 +992,21 @@ namespace detail {
             it                         = oFmtString->pos;
 
             std::string ret;
+            // Reserve space based on format string length to reduce reallocations
+            ret.reserve(fmtString.size() * 2);
             while(it != last) {
                 auto const oReplacementField
                   = getNextReplacementFieldFromFmtStringAndAppendStrings(ret, fmtString);
                 if(!oReplacementField) {
                     break;
                 }
-                auto const os
+                auto const optionalStr
                   = parseFromTypeId(it, last, *oReplacementField, false, false, stringConstantsMap);
-                if(!os) {
+                if(!optionalStr) {
                     return std::nullopt;
                 }
-                it = os->pos;
-                ret += os->str;
+                it = optionalStr->pos;
+                ret += optionalStr->str;
             }
             if(!fmtString.empty()) {
                 return std::nullopt;
@@ -968,13 +1017,13 @@ namespace detail {
         }
 
         template<typename It>
-        ParseResult<It> parseFromTypeId(
-          It                                          first,
-          It                                          last,
-          std::string_view                            replacementField,
-          bool                                        in_list,
-          bool                                        in_map,
-          std::map<std::uint16_t, std::string> const& stringConstantsMap) {
+        ParseResult<It> parseFromTypeId(It                                     first,
+                                        It                                     last,
+                                        std::string_view                       replacementField,
+                                        bool                                   in_list,
+                                        bool                                   in_map,
+                                        std::unordered_map<std::uint16_t,
+                                                           std::string> const& stringConstantsMap) {
             TypeIdentifier const ti = static_cast<TypeIdentifier>(*first & std::byte{0x03});
             if(ti == TypeIdentifier::fmt_string) {
                 if(parseFmtStringTypeIdentifier(*first, FmtStringType::sub)) {
@@ -1004,22 +1053,23 @@ namespace detail {
 }   // namespace detail
 
 template<typename ErrorMessageF>
-inline std::tuple<std::optional<std::string>, std::span<std::byte const>, std::size_t> parse(
-  std::span<std::byte const>                  buffer,
-  std::map<std::uint16_t, std::string> const& stringConstantsMap,
-  ErrorMessageF&&                             errorMessagef) {
+inline std::tuple<std::optional<std::string>,
+                  std::span<std::byte const>,
+                  std::size_t>
+parse(std::span<std::byte const>             buffer,
+      std::unordered_map<std::uint16_t,
+                         std::string> const& stringConstantsMap,
+      ErrorMessageF&&                        errorMessagef) {
     std::size_t unparsed_bytes{};
     while(!buffer.empty()) {
-        auto const        it = std::find(buffer.begin(), buffer.end(), std::byte{0x55});
+        auto const        it = std::find(buffer.begin(), buffer.end(), protocol::Start_marker);
         std::size_t const s  = static_cast<std::size_t>(std::distance(buffer.begin(), it));
         buffer               = buffer.subspan(s);
         unparsed_bytes += s;
-        if(
-          2 > buffer.size()
-          || detail::parseFmtStringTypeIdentifier(buffer[1], detail::FmtStringType::normal)
-          || detail::parseFmtStringTypeIdentifier(
-            buffer[1],
-            detail::FmtStringType::cataloged_normal))
+        if(2 > buffer.size()
+           || detail::parseFmtStringTypeIdentifier(buffer[1], detail::FmtStringType::normal)
+           || detail::parseFmtStringTypeIdentifier(buffer[1],
+                                                   detail::FmtStringType::cataloged_normal))
         {
             break;
         }
@@ -1028,7 +1078,7 @@ inline std::tuple<std::optional<std::string>, std::span<std::byte const>, std::s
     }
 
     bool const contains_end
-      = std::find(buffer.begin(), buffer.end(), std::byte{0xAA}) != buffer.end();
+      = std::find(buffer.begin(), buffer.end(), protocol::End_marker) != buffer.end();
 
     if(2 > buffer.size() || !contains_end) {
         return {std::nullopt, buffer, unparsed_bytes};
@@ -1042,16 +1092,17 @@ inline std::tuple<std::optional<std::string>, std::span<std::byte const>, std::s
     }();
 
     detail::Parser parser{std::forward<ErrorMessageF>(errorMessagef)};
-    auto const     os
+    auto const     optionalStr
       = parser.parseFmt(std::next(buffer.begin()), buffer.end(), fmtStringType, stringConstantsMap);
 
-    if(!os) {
+    if(!optionalStr) {
         return {std::nullopt, buffer, unparsed_bytes};
     }
-    if(os->pos == buffer.end() || *os->pos != std::byte{0xAA}) {
+    if(optionalStr->pos == buffer.end() || *optionalStr->pos != protocol::End_marker) {
         return {std::nullopt, buffer, unparsed_bytes};
     }
-    buffer = buffer.subspan(static_cast<std::size_t>(std::distance(buffer.begin(), os->pos + 1)));
-    return {os->str, buffer, unparsed_bytes};
+    buffer = buffer.subspan(
+      static_cast<std::size_t>(std::distance(buffer.begin(), optionalStr->pos + 1)));
+    return {optionalStr->str, buffer, unparsed_bytes};
 }
 }   // namespace remote_fmt
