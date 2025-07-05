@@ -154,12 +154,12 @@ namespace detail {
 
     template<std::size_t N>
     consteval void compile_time_assert(char const (&str)[N],
-                                       bool predicat) {
+                                       bool predicate) {
 #ifdef __clang__
     #pragma clang diagnostic push
     #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
 #endif
-        [[maybe_unused]] auto const x = str[N - 1 + static_cast<std::size_t>(!predicat)];
+        [[maybe_unused]] auto const x = str[N - 1 + static_cast<std::size_t>(!predicate)];
 #ifdef __clang__
     #pragma clang diagnostic pop
 #endif
