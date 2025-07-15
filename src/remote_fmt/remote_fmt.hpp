@@ -94,42 +94,32 @@ namespace detail {
     }
 
     constexpr std::optional<std::size_t> checkReplacementFieldCount(std::string_view sv) {
-        bool        wasLastOpenBracket  = false;
-        bool        wasLastCloseBracket = false;
-        int         openCount           = 0;
-        std::size_t argCount            = 0;
+        int         openCount = 0;
+        std::size_t argCount  = 0;
 
-        for(auto c : sv) {
+        for(auto it = sv.begin(); it != sv.end(); std::advance(it, 1)) {
+            char const c = *it;
+
             if(c == '{') {
-                wasLastCloseBracket = false;
-                if(wasLastOpenBracket) {
-                    wasLastOpenBracket = false;
-                    --openCount;
+                if(std::next(it) != sv.end() && *std::next(it) == '{') {
+                    std::advance(it, 1);
                 } else {
-                    wasLastOpenBracket = true;
                     ++openCount;
                 }
             } else if(c == '}') {
-                wasLastOpenBracket = false;
-                if(wasLastCloseBracket) {
-                    wasLastCloseBracket = false;
-                    ++openCount;
-                    --argCount;
+                if(std::next(it) != sv.end() && *std::next(it) == '}') {
+                    std::advance(it, 1);
                 } else {
-                    wasLastCloseBracket = true;
-                    --openCount;
-                    ++argCount;
+                    if(--openCount == 0) {
+                        ++argCount;
+                    } else if(openCount < 0) {
+                        return std::nullopt;
+                    }
                 }
-            } else {
-                wasLastOpenBracket  = false;
-                wasLastCloseBracket = false;
             }
         }
 
-        if(openCount != 0) {
-            return std::nullopt;
-        }
-        return argCount;
+        return openCount == 0 ? std::optional{argCount} : std::nullopt;
     }
 
     template<std::size_t N>

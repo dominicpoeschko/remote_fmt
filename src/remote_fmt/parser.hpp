@@ -84,7 +84,9 @@ namespace detail {
             bool const bg_term = 0 != (set & 8);
             bool const emp     = 0 != (set & 16);
 
-            if((fg_rgb && fg_term) || (bg_rgb && bg_term)) {
+            if((fg_rgb && fg_term) || (bg_rgb && bg_term) || (fg_term && (bg_term || bg_rgb))
+               || (bg_term && (fg_term || fg_rgb)))
+            {
                 return std::nullopt;
             }
             fmt::text_style style{};
@@ -95,16 +97,29 @@ namespace detail {
                     if(!o) {
                         return false;
                     }
+                    auto const color = o->first;
+                    if(color >= 1 << 25) {
+                        return false;
+                    }
                     first = o->second;
-                    style |= gen(static_cast<fmt::color>(o->first));
+                    style |= gen(static_cast<fmt::color>(color));
                 }
                 if(term) {
                     auto const o = parser.extractSize(first, last, TypeSize::_1);
                     if(!o) {
                         return false;
                     }
+
+                    auto const color = o->first;
+
+                    if(!magic_enum::enum_contains<fmt::terminal_color>(
+                         static_cast<std::underlying_type_t<fmt::terminal_color>>(color)))
+                    {
+                        return false;
+                    }
+
                     first = o->second;
-                    style |= gen(static_cast<fmt::terminal_color>(o->first));
+                    style |= gen(static_cast<fmt::terminal_color>(color));
                 }
                 return true;
             };
@@ -133,9 +148,15 @@ namespace detail {
             if(!inner_result) {
                 return std::nullopt;
             }
-            auto const s = fmt::format("{}", fmt::styled(inner_result->str, style));
-            first        = inner_result->pos;
-            return ParseResult_<It>{s, first};
+
+            try {
+                auto const s = fmt::format("{}", fmt::styled(inner_result->str, style));
+                first        = inner_result->pos;
+                return ParseResult_<It>{s, first};
+
+            } catch(...) {
+                return std::nullopt;
+            }
         }
     };
 
@@ -1024,6 +1045,10 @@ namespace detail {
                                         bool                                   in_map,
                                         std::unordered_map<std::uint16_t,
                                                            std::string> const& stringConstantsMap) {
+            if(first == last) {
+                return std::nullopt;
+            }
+
             TypeIdentifier const ti = static_cast<TypeIdentifier>(*first & std::byte{0x03});
             if(ti == TypeIdentifier::fmt_string) {
                 if(parseFmtStringTypeIdentifier(*first, FmtStringType::sub)) {
