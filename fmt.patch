@@ -1,0 +1,13 @@
+diff --git a/include/fmt/format.h b/include/fmt/format.h
+index 25153a4d..8883de70 100644
+--- a/include/fmt/format.h
++++ b/include/fmt/format.h
+@@ -1269,7 +1269,7 @@ class utf8_to_utf16 {
+   }
+   inline auto size() const -> size_t { return buffer_.size() - 1; }
+   inline auto c_str() const -> const wchar_t* { return &buffer_[0]; }
+-  inline auto str() const -> std::wstring { return {&buffer_[0], size()}; }
++  /*inline auto str() const -> std::wstring { return {&buffer_[0], size()}; }*/
+ };
+ 
+ enum class to_utf8_error_policy { abort, replace };

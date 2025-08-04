@@ -15,6 +15,7 @@ parser.add_argument('--source_dir', help='dir name')
 parser.add_argument('--compiler', help='compiler name')
 parser.add_argument('--objects', nargs='+', help='compiler name')
 parser.add_argument('--flags', default=[],  nargs='+', help='compiler name')
+parser.add_argument('--nm', help='nm tool to use')
 
 args = parser.parse_args()
 
@@ -33,6 +34,9 @@ if not args.compiler:
     sys.exit(1)
 if not args.objects:
     print("Error: --objects is required", file=sys.stderr)
+    sys.exit(1)
+if not args.nm:
+    print("Error: --nm is required", file=sys.stderr)
     sys.exit(1)
 
 # Ensure output directory exists
@@ -73,9 +77,8 @@ def parse_symbol(symbol):
 
 
 # Check if tools are available
-llvm_nm_path = shutil.which('llvm-nm')
-if not llvm_nm_path:
-    print("Error: llvm-nm not found. Please install LLVM tools.", file=sys.stderr)
+if not shutil.which(args.nm):
+    print(f"Error: nm '{args.nm}' not found.", file=sys.stderr)
     sys.exit(1)
 
 if not shutil.which(args.compiler):
@@ -90,13 +93,13 @@ for f in args.objects:
         sys.exit(1)
 
     try:
-        x = subprocess.run([llvm_nm_path, "-uC", f],
+        x = subprocess.run([args.nm, "-uC", f],
                            check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
-        print(f"Error running llvm-nm on '{f}': {e}", file=sys.stderr)
+        print(f"Error running nm on '{f}': {e}", file=sys.stderr)
         sys.exit(1)
     except FileNotFoundError:
-        print("Error: llvm-nm command not found.", file=sys.stderr)
+        print("Error: nm command not found.", file=sys.stderr)
         sys.exit(1)
     for l in iter(x.stdout.splitlines()):
         if l.strip().startswith("U unsigned short remote_fmt::catalog<sc::StringConstant<"):
