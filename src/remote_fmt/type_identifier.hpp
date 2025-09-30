@@ -39,36 +39,36 @@ namespace remote_fmt { namespace detail {
 
     template<typename T,
              typename Append>
-    void appendSized(TypeSize ts,
-                     T        v,
+    void appendSized(TypeSize typeSize,
+                     T        value,
                      Append   append) {
-        switch(ts) {
-        case TypeSize::_1: append(static_cast<std::uint8_t>(v)); break;
-        case TypeSize::_2: append(static_cast<std::uint16_t>(v)); break;
-        case TypeSize::_4: append(static_cast<std::uint32_t>(v)); break;
-        case TypeSize::_8: append(static_cast<std::uint64_t>(v)); break;
+        switch(typeSize) {
+        case TypeSize::_1: append(static_cast<std::uint8_t>(value)); break;
+        case TypeSize::_2: append(static_cast<std::uint16_t>(value)); break;
+        case TypeSize::_4: append(static_cast<std::uint32_t>(value)); break;
+        case TypeSize::_8: append(static_cast<std::uint64_t>(value)); break;
         }
     }
 
     template<typename T,
              typename Append>
-    void appendSized(TimeSize ts,
-                     T        v,
+    void appendSized(TimeSize timeSize,
+                     T        value,
                      Append   append) {
-        switch(ts) {
-        case TimeSize::_4: append(static_cast<std::int32_t>(v)); break;
-        case TimeSize::_8: append(static_cast<std::int64_t>(v)); break;
+        switch(timeSize) {
+        case TimeSize::_4: append(static_cast<std::int32_t>(value)); break;
+        case TimeSize::_8: append(static_cast<std::int64_t>(value)); break;
         }
     }
 
     template<typename T,
              typename Append>
-    void appendSized(RangeSize rs,
-                     T         v,
+    void appendSized(RangeSize rangeSize,
+                     T         value,
                      Append    append) {
-        switch(rs) {
-        case RangeSize::_1: append(static_cast<std::uint8_t>(v)); break;
-        case RangeSize::_2: append(static_cast<std::uint16_t>(v)); break;
+        switch(rangeSize) {
+        case RangeSize::_1: append(static_cast<std::uint8_t>(value)); break;
+        case RangeSize::_2: append(static_cast<std::uint16_t>(value)); break;
         }
     }
 
@@ -88,8 +88,8 @@ namespace remote_fmt { namespace detail {
         }
     }
 
-    constexpr std::size_t byteSize(TypeSize ts) {
-        switch(ts) {
+    constexpr std::size_t byteSize(TypeSize typeSize) {
+        switch(typeSize) {
         case TypeSize::_1: return 1;
         case TypeSize::_2: return 2;
         case TypeSize::_4: return 4;
@@ -98,32 +98,32 @@ namespace remote_fmt { namespace detail {
         return 0;
     }
 
-    constexpr std::size_t byteSize(TimeSize ts) {
-        switch(ts) {
+    constexpr std::size_t byteSize(TimeSize timeSize) {
+        switch(timeSize) {
         case TimeSize::_4: return 4;
         case TimeSize::_8: return 8;
         }
         return 0;
     }
 
-    constexpr std::size_t byteSize(RangeSize rs) {
-        switch(rs) {
+    constexpr std::size_t byteSize(RangeSize rangeSize) {
+        switch(rangeSize) {
         case RangeSize::_1: return 1;
         case RangeSize::_2: return 2;
         }
         return 0;
     }
 
-    constexpr TypeSize timeSizeToTypeSize(TimeSize ts) {
-        switch(ts) {
+    constexpr TypeSize timeSizeToTypeSize(TimeSize timeSize) {
+        switch(timeSize) {
         case TimeSize::_4: return TypeSize::_4;
         case TimeSize::_8: return TypeSize::_8;
         }
         return TypeSize::_8;
     }
 
-    constexpr TypeSize rangeSizeToTypeSize(RangeSize rs) {
-        switch(rs) {
+    constexpr TypeSize rangeSizeToTypeSize(RangeSize rangeSize) {
+        switch(rangeSize) {
         case RangeSize::_1: return TypeSize::_1;
         case RangeSize::_2: return TypeSize::_2;
         }
@@ -181,9 +181,9 @@ namespace remote_fmt { namespace detail {
       = std::conditional_t<rs == RangeSize::_1, std::uint8_t, std::uint16_t>;
 
     template<typename T>
-    constexpr std::byte castAndShift(T           v,
+    constexpr std::byte castAndShift(T           value,
                                      std::size_t shift) {
-        return static_cast<std::byte>(static_cast<std::uint8_t>(v)
+        return static_cast<std::byte>(static_cast<std::uint8_t>(value)
                                       << static_cast<std::uint8_t>(shift));
     }
 
@@ -198,8 +198,8 @@ namespace remote_fmt { namespace detail {
     template<TypeIdentifier ti, auto... vs>
     static constexpr std::byte TypeId_v{Fail<vs...>::value};
 
-    constexpr TypeIdentifier parseTypeIdentifier(std::byte v) {
-        return static_cast<TypeIdentifier>(v & std::byte{0x03});
+    constexpr TypeIdentifier parseTypeIdentifier(std::byte value) {
+        return static_cast<TypeIdentifier>(value & std::byte{0x03});
     }
 
     template<FmtStringType ft>
@@ -207,107 +207,120 @@ namespace remote_fmt { namespace detail {
       castAndShift(TypeIdentifier::fmt_string, 0) | castAndShift(ft, 4)};
 
     template<FmtStringType ft>
-    constexpr std::byte fmtStringTypeIdentifier(RangeSize rs) {
-        return TypeId_v<TypeIdentifier::fmt_string, ft> | castAndShift(rs, 2);
+    constexpr std::byte fmtStringTypeIdentifier(RangeSize rangeSize) {
+        return TypeId_v<TypeIdentifier::fmt_string, ft> | castAndShift(rangeSize, 2);
     }
 
-    constexpr std::optional<RangeSize> parseFmtStringTypeIdentifier(std::byte     v,
+    constexpr std::optional<RangeSize> parseFmtStringTypeIdentifier(std::byte     value,
                                                                     FmtStringType type) {
-        TypeIdentifier const ti = parseTypeIdentifier(v);
-        if(ti != detail::TypeIdentifier::fmt_string) {
+        TypeIdentifier const typeId = parseTypeIdentifier(value);
+        if(typeId != detail::TypeIdentifier::fmt_string) {
             return std::nullopt;
         }
 
-        FmtStringType const ft = static_cast<FmtStringType>((v & std::byte{0x30}) >> 4);
-        if(ft != type) {
+        FmtStringType const fmtType = static_cast<FmtStringType>((value & std::byte{0x30}) >> 4);
+        if(fmtType != type) {
             return std::nullopt;
         }
 
-        RangeSize const ts = static_cast<RangeSize>((v & std::byte{0x04}) >> 2);
+        RangeSize const rangeSize = static_cast<RangeSize>((value & std::byte{0x04}) >> 2);
 
-        if(v
-           != (detail::castAndShift(ti, 0) | detail::castAndShift(ft, 4)
-               | detail::castAndShift(ts, 2)))
+        if(value
+           != (detail::castAndShift(static_cast<TypeIdentifier>(typeId), 0)
+               | detail::castAndShift(static_cast<FmtStringType>(fmtType), 4)
+               | detail::castAndShift(static_cast<RangeSize>(rangeSize), 2)))
         {
             return std::nullopt;
         }
 
-        return ts;
+        return rangeSize;
     }
 
     template<TrivialType tt, TypeSize ts>
     static constexpr std::byte TypeId_v<TypeIdentifier::trivial, tt, ts>{
-      castAndShift(TypeIdentifier::trivial, 0) | castAndShift(ts, 2) | castAndShift(tt, 4)};
+      castAndShift(TypeIdentifier::trivial, 0) | castAndShift(static_cast<TypeSize>(ts), 2)
+      | castAndShift(static_cast<TrivialType>(tt), 4)};
 
-    template<TrivialType tt,
-             TypeSize    ts>
+    template<TrivialType trivialType,
+             TypeSize    typeSize>
     constexpr std::byte trivialTypeIdentifier() {
-        return TypeId_v<TypeIdentifier::trivial, tt, ts>;
+        return TypeId_v<TypeIdentifier::trivial,
+                        static_cast<TrivialType>(trivialType),
+                        static_cast<TypeSize>(typeSize)>;
     }
 
     constexpr std::optional<std::pair<TrivialType,
                                       TypeSize>>
-    parseTrivialTypeIdentifier(std::byte v) {
-        TypeIdentifier const ti = parseTypeIdentifier(v);
-        if(ti != TypeIdentifier::trivial) {
+    parseTrivialTypeIdentifier(std::byte value) {
+        TypeIdentifier const typeId = parseTypeIdentifier(value);
+        if(typeId != TypeIdentifier::trivial) {
             return std::nullopt;
         }
 
-        TrivialType const tt = static_cast<TrivialType>((v & std::byte{0x70}) >> 4);
-        if(static_cast<std::uint8_t>(tt) > static_cast<std::uint8_t>(TrivialType::floatingpoint)) {
+        TrivialType const trivialType = static_cast<TrivialType>((value & std::byte{0x70}) >> 4);
+        if(static_cast<std::uint8_t>(trivialType)
+           > static_cast<std::uint8_t>(TrivialType::floatingpoint))
+        {
             return std::nullopt;
         }
 
-        TypeSize const ts = static_cast<TypeSize>((v & std::byte{0x0C}) >> 2);
+        TypeSize const typeSize = static_cast<TypeSize>((value & std::byte{0x0C}) >> 2);
 
-        if(v
-           != (detail::castAndShift(ti, 0) | detail::castAndShift(tt, 4)
-               | detail::castAndShift(ts, 2)))
+        if(value
+           != (detail::castAndShift(static_cast<TypeIdentifier>(typeId), 0)
+               | detail::castAndShift(static_cast<TrivialType>(trivialType), 4)
+               | detail::castAndShift(static_cast<TypeSize>(typeSize), 2)))
         {
             return std::nullopt;
         }
         return {
-          {tt, ts}
+          {trivialType, typeSize}
         };
     }
 
     template<RangeType rt, RangeLayout rl>
     static constexpr std::byte TypeId_v<TypeIdentifier::range, rt, rl>{
-      castAndShift(TypeIdentifier::range, 0) | castAndShift(rt, 4) | castAndShift(rl, 7)};
+      castAndShift(TypeIdentifier::range, 0) | castAndShift(static_cast<RangeType>(rt), 4)
+      | castAndShift(static_cast<RangeLayout>(rl), 7)};
 
-    template<RangeType   rt,
-             RangeLayout rl>
-    constexpr std::byte rangeTypeIdentifier(RangeSize rs) {
-        return TypeId_v<TypeIdentifier::range, rt, rl> | castAndShift(rs, 2);
+    template<RangeType   rangeType,
+             RangeLayout rangeLayout>
+    constexpr std::byte rangeTypeIdentifier(RangeSize rangeSize) {
+        return TypeId_v<TypeIdentifier::range,
+                        static_cast<RangeType>(rangeType),
+                        static_cast<RangeLayout>(rangeLayout)>
+             | castAndShift(rangeSize, 2);
     }
 
     constexpr std::optional<std::tuple<RangeType,
                                        RangeSize,
                                        RangeLayout>>
-    parseRangeTypeIdentifier(std::byte v) {
-        TypeIdentifier const ti = parseTypeIdentifier(v);
-        if(ti != TypeIdentifier::range) {
+    parseRangeTypeIdentifier(std::byte value) {
+        TypeIdentifier const typeId = parseTypeIdentifier(value);
+        if(typeId != TypeIdentifier::range) {
             return std::nullopt;
         }
 
-        RangeSize const   rs = static_cast<RangeSize>((v & std::byte{0x04}) >> 2);
-        RangeType const   rt = static_cast<RangeType>((v & std::byte{0x70}) >> 4);
-        RangeLayout const rl = static_cast<RangeLayout>((v & std::byte{0x80}) >> 7);
+        RangeSize const   rangeSize   = static_cast<RangeSize>((value & std::byte{0x04}) >> 2);
+        RangeType const   rangeType   = static_cast<RangeType>((value & std::byte{0x70}) >> 4);
+        RangeLayout const rangeLayout = static_cast<RangeLayout>((value & std::byte{0x80}) >> 7);
 
-        if(static_cast<std::uint8_t>(rt)
+        if(static_cast<std::uint8_t>(rangeType)
            > static_cast<std::uint8_t>(RangeType::extendedTypeIdentifier))
         {
             return std::nullopt;
         }
 
-        if(v
-           != (detail::castAndShift(ti, 0) | detail::castAndShift(rs, 2)
-               | detail::castAndShift(rt, 4) | detail::castAndShift(rl, 7)))
+        if(value
+           != (detail::castAndShift(static_cast<TypeIdentifier>(typeId), 0)
+               | detail::castAndShift(static_cast<RangeSize>(rangeSize), 2)
+               | detail::castAndShift(static_cast<RangeType>(rangeType), 4)
+               | detail::castAndShift(static_cast<RangeLayout>(rangeLayout), 7)))
         {
             return std::nullopt;
         }
         return {
-          {rt, rs, rl}
+          {rangeType, rangeSize, rangeLayout}
         };
     }
 
@@ -316,48 +329,51 @@ namespace remote_fmt { namespace detail {
       castAndShift(TypeIdentifier::time, 0) | castAndShift(num_ts, 2) | castAndShift(den_ts, 4)
       | castAndShift(tt, 7)};
 
-    template<TimeType tt,
+    template<TimeType timeType,
              TypeSize num_ts,
              TypeSize den_ts>
-    constexpr std::byte timeTypeIdentifier(TimeSize ts) {
-        return TypeId_v<TypeIdentifier::time, tt, num_ts, den_ts> | castAndShift(ts, 6);
+    constexpr std::byte timeTypeIdentifier(TimeSize timeSize) {
+        return TypeId_v<TypeIdentifier::time, timeType, num_ts, den_ts> | castAndShift(timeSize, 6);
     }
 
     constexpr std::optional<std::tuple<TimeType,
                                        TypeSize,
                                        TypeSize,
                                        TimeSize>>
-    parseTimeTypeIdentifier(std::byte v) {
-        TypeIdentifier const ti = parseTypeIdentifier(v);
-        if(ti != TypeIdentifier::time) {
+    parseTimeTypeIdentifier(std::byte value) {
+        TypeIdentifier const typeId = parseTypeIdentifier(value);
+        if(typeId != TypeIdentifier::time) {
             return std::nullopt;
         }
 
-        TypeSize const num_ts = static_cast<TypeSize>((v & std::byte{0x0C}) >> 2);
-        TypeSize const den_ts = static_cast<TypeSize>((v & std::byte{0x30}) >> 4);
-        TimeSize const ts     = static_cast<TimeSize>((v & std::byte{0x40}) >> 6);
-        TimeType const tt     = static_cast<TimeType>((v & std::byte{0x80}) >> 7);
+        TypeSize const num_ts   = static_cast<TypeSize>((value & std::byte{0x0C}) >> 2);
+        TypeSize const den_ts   = static_cast<TypeSize>((value & std::byte{0x30}) >> 4);
+        TimeSize const timeSize = static_cast<TimeSize>((value & std::byte{0x40}) >> 6);
+        TimeType const timeType = static_cast<TimeType>((value & std::byte{0x80}) >> 7);
 
-        if(v
-           != (detail::castAndShift(ti, 0) | detail::castAndShift(num_ts, 2)
-               | detail::castAndShift(den_ts, 4) | detail::castAndShift(ts, 6)
-               | detail::castAndShift(tt, 7)))
+        if(value
+           != (detail::castAndShift(static_cast<TypeIdentifier>(typeId), 0)
+               | detail::castAndShift(static_cast<TypeSize>(num_ts), 2)
+               | detail::castAndShift(static_cast<TypeSize>(den_ts), 4)
+               | detail::castAndShift(static_cast<TimeSize>(timeSize), 6)
+               | detail::castAndShift(static_cast<TimeType>(timeType), 7)))
         {
             return std::nullopt;
         }
         return {
-          {tt, num_ts, den_ts, ts}
+          {timeType, num_ts, den_ts, timeSize}
         };
     }
 
     template<ExtendedTypeIdentifier eti,
              typename Append>
     void appendExtendedTypeIdentifier(Append append) {
-        auto constexpr rs = detail::sizeToRangeSize(static_cast<std::size_t>(eti));
-        auto constexpr ti = detail::rangeTypeIdentifier<detail::RangeType::extendedTypeIdentifier,
-                                                        detail::RangeLayout::compact>(rs);
-        append(ti);
-        appendSized(rs, eti, append);
+        auto constexpr rangeSize = detail::sizeToRangeSize(static_cast<std::size_t>(eti));
+        auto constexpr typeId
+          = detail::rangeTypeIdentifier<detail::RangeType::extendedTypeIdentifier,
+                                        detail::RangeLayout::compact>(rangeSize);
+        append(typeId);
+        appendSized(rangeSize, eti, append);
     }
 
 }}   // namespace remote_fmt::detail

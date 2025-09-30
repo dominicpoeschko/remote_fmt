@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.28)
 if(POLICY CMP0175)
     cmake_policy(SET CMP0175 NEW)
 endif()
@@ -22,13 +22,15 @@ if(NOT CMAKE_CROSSCOMPILING)
 else()
     include(FetchContent)
     option(FMT_INSTALL "" OFF)
+    mark_as_advanced(FORCE FMT_INSTALL)
+
     FetchContent_Populate(
         fmt
         QUIET
         GIT_REPOSITORY https://github.com/fmtlib/fmt.git
         GIT_TAG master
         PATCH_COMMAND git apply ${remote_fmt_dir}/fmt.patch
-        UPDATE_DISCONNECTED 1)
+        UPDATE_DISCONNECTED TRUE)
 
     target_include_directories(remote_fmt INTERFACE ${fmt_SOURCE_DIR}/include)
     target_compile_definitions(remote_fmt INTERFACE FMT_STATIC_THOUSANDS_SEPARATOR=1)

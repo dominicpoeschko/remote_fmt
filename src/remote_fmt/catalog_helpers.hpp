@@ -30,8 +30,8 @@ inline std::pair<std::unordered_map<std::uint16_t,
                  std::string>
 parseStringConstantsFromJsonFile(std::string const& file) {
     try {
-        std::ifstream        f(file);
-        nlohmann::json const data = nlohmann::json::parse(f);
+        std::ifstream        fileStream(file);
+        nlohmann::json const data = nlohmann::json::parse(fileStream);
         return {data["StringConstants"].get<std::unordered_map<std::uint16_t, std::string>>(), ""};
     } catch(std::exception const& e) {
         return {{}, fmt::format("read format strings failed: {}", e.what())};
