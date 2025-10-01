@@ -15,6 +15,7 @@
     #pragma clang diagnostic ignored "-Wduplicate-enum"
     #pragma clang diagnostic ignored "-Wswitch-enum"
     #pragma clang diagnostic ignored "-Wglobal-constructors"
+    #pragma clang diagnostic ignored "-Wundefined-func-template"
 #endif
 
 #include <fmt/chrono.h>
