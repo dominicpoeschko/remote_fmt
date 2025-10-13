@@ -427,7 +427,7 @@ struct formatter<T> {
 
             return formatter<format_t>{}.format(static_cast<format_t>(value), printer);
         };
-#if __has_include(<magic_enum.hpp>)
+#if __has_include(<magic_enum/magic_enum.hpp>)
         if(magic_enum::enum_contains(value)) {
             return magic_enum::enum_switch(
               [&](auto enumValue) {
