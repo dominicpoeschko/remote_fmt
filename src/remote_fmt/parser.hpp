@@ -72,15 +72,11 @@ namespace detail {
               std::unordered_map<std::uint16_t,
                                  std::string> const& stringConstantsMap,
               Parser&                                parser) {
-            if(1 > static_cast<std::size_t>(std::distance(first, last))) {
-                return std::nullopt;
-            }
+            if(1 > static_cast<std::size_t>(std::distance(first, last))) { return std::nullopt; }
             std::uint8_t const set = static_cast<std::uint8_t>(*first);
             ++first;
 
-            if((set & static_cast<std::uint8_t>(0xC0)) != 0) {
-                return std::nullopt;
-            }
+            if((set & static_cast<std::uint8_t>(0xC0)) != 0) { return std::nullopt; }
             bool const fg_rgb  = 0 != (set & static_cast<std::uint8_t>(1));
             bool const fg_term = 0 != (set & static_cast<std::uint8_t>(2));
             bool const bg_rgb  = 0 != (set & static_cast<std::uint8_t>(4));
@@ -97,21 +93,15 @@ namespace detail {
             auto extractColor = [&](bool rgb, bool term, auto gen) {
                 if(rgb) {
                     auto const opt_result = parser.extractSize(first, last, TypeSize::_4);
-                    if(!opt_result) {
-                        return false;
-                    }
+                    if(!opt_result) { return false; }
                     auto const color = opt_result->first;
-                    if(color >= (1U << 25U)) {
-                        return false;
-                    }
+                    if(color >= (1U << 25U)) { return false; }
                     first = opt_result->second;
                     style |= gen(static_cast<fmt::color>(color));
                 }
                 if(term) {
                     auto const opt_result_term = parser.extractSize(first, last, TypeSize::_1);
-                    if(!opt_result_term) {
-                        return false;
-                    }
+                    if(!opt_result_term) { return false; }
 
                     auto const color = opt_result_term->first;
 
@@ -148,18 +138,14 @@ namespace detail {
                                                              in_map,
                                                              stringConstantsMap);
 
-            if(!inner_result) {
-                return std::nullopt;
-            }
+            if(!inner_result) { return std::nullopt; }
 
             try {
                 auto const styled_string = fmt::format("{}", fmt::styled(inner_result->str, style));
                 first                    = inner_result->pos;
                 return ParseResult_<Iterator>{styled_string, first};
 
-            } catch(...) {
-                return std::nullopt;
-            }
+            } catch(...) { return std::nullopt; }
         }
     };
 
@@ -178,19 +164,13 @@ namespace detail {
               std::unordered_map<std::uint16_t,
                                  std::string> const& stringConstantsMap,
               Parser&                                parser) {
-            if(1 > static_cast<std::size_t>(std::distance(first, last))) {
-                return std::nullopt;
-            }
+            if(1 > static_cast<std::size_t>(std::distance(first, last))) { return std::nullopt; }
             std::uint8_t const isSet = static_cast<std::uint8_t>(*first);
             ++first;
 
-            if(isSet != 0 && isSet != 1) {
-                return std::nullopt;
-            }
+            if(isSet != 0 && isSet != 1) { return std::nullopt; }
 
-            if(isSet == 0) {
-                return ParseResult_<Iterator>{"()", first};
-            }
+            if(isSet == 0) { return ParseResult_<Iterator>{"()", first}; }
             auto const inner_result = parser.parseFromTypeId(first,
                                                              last,
                                                              replacementField,
@@ -198,9 +178,7 @@ namespace detail {
                                                              in_map,
                                                              stringConstantsMap);
 
-            if(!inner_result) {
-                return std::nullopt;
-            }
+            if(!inner_result) { return std::nullopt; }
             return ParseResult_<Iterator>{inner_result->str, inner_result->pos};
         }
     };
@@ -269,12 +247,8 @@ namespace detail {
         extractFloatingpoint(Iterator first,
                              Iterator last,
                              TypeSize typeSize) {
-            if(typeSize == TypeSize::_4) {
-                return extract<float>(first, last);
-            }
-            if(typeSize == TypeSize::_8) {
-                return extract<double>(first, last);
-            }
+            if(typeSize == TypeSize::_4) { return extract<float>(first, last); }
+            if(typeSize == TypeSize::_8) { return extract<double>(first, last); }
             return std::nullopt;
         }
 
@@ -304,9 +278,7 @@ namespace detail {
             }
 
             auto optionalSize = extractUnsigned(first, last, typeSize);
-            if(!optionalSize) {
-                return std::nullopt;
-            }
+            if(!optionalSize) { return std::nullopt; }
 
             return {
               {static_cast<std::size_t>(*optionalSize),
@@ -331,9 +303,7 @@ namespace detail {
         std::optional<char> extractCharacter(Iterator first,
                                              Iterator last,
                                              TypeSize typeSize) {
-            if(typeSize == TypeSize::_1) {
-                return extract<char>(first, last);
-            }
+            if(typeSize == TypeSize::_1) { return extract<char>(first, last); }
             return std::nullopt;
         }
 
@@ -342,12 +312,8 @@ namespace detail {
                                            Iterator last,
                                            TypeSize typeSize) {
             auto const optionalUnsigned = extractUnsigned(first, last, typeSize);
-            if(!optionalUnsigned) {
-                return std::nullopt;
-            }
-            if(*optionalUnsigned != 0) {
-                return true;
-            }
+            if(!optionalUnsigned) { return std::nullopt; }
+            if(*optionalUnsigned != 0) { return true; }
             return false;
         }
 
@@ -356,9 +322,7 @@ namespace detail {
                                                   Iterator last,
                                                   TypeSize typeSize) {
             auto const optionalUnsigned = extractUnsigned(first, last, typeSize);
-            if(!optionalUnsigned) {
-                return std::nullopt;
-            }
+            if(!optionalUnsigned) { return std::nullopt; }
             return std::bit_cast<void const*>(static_cast<std::uintptr_t>(*optionalUnsigned));
         }
 
@@ -393,16 +357,12 @@ namespace detail {
             case TrivialType::floatingpoint:
                 {
                     auto optionalFloat = extractFloatingpoint(first, last, typeSize);
-                    if(!optionalFloat) {
-                        return std::nullopt;
-                    }
+                    if(!optionalFloat) { return std::nullopt; }
                     std::visit([&](auto value) { optionalTrivial = value; }, *optionalFloat);
                 }
                 break;
             }
-            if(!optionalTrivial) {
-                return std::nullopt;
-            }
+            if(!optionalTrivial) { return std::nullopt; }
             first += static_cast<std::make_signed_t<std::size_t>>(byteCount);
             return {
               {*optionalTrivial, first}
@@ -416,9 +376,7 @@ namespace detail {
                                                       TrivialType      trivialType,
                                                       TypeSize         typeSize) {
             auto const optionalTrivial = extractTrivial(first, last, trivialType, typeSize);
-            if(!optionalTrivial) {
-                return std::nullopt;
-            }
+            if(!optionalTrivial) { return std::nullopt; }
             first                  = optionalTrivial->second;
             auto const optionalStr = std::visit(
               [&](auto const& value) -> std::optional<std::string> {
@@ -430,9 +388,7 @@ namespace detail {
                   }
               },
               optionalTrivial->first);
-            if(!optionalStr) {
-                return std::nullopt;
-            }
+            if(!optionalStr) { return std::nullopt; }
             return {
               {*optionalStr, first}
             };
@@ -442,13 +398,9 @@ namespace detail {
         ParseResult<Iterator> parseTrivial(Iterator         first,
                                            Iterator         last,
                                            std::string_view replacementField) {
-            if(first == last) {
-                return std::nullopt;
-            }
+            if(first == last) { return std::nullopt; }
             auto const trivialTypeId = parseTrivialTypeIdentifier(*first);
-            if(!trivialTypeId) {
-                return std::nullopt;
-            }
+            if(!trivialTypeId) { return std::nullopt; }
             ++first;
             auto const [trivialType, typeSize] = *trivialTypeId;
             return extractAndFormatTrivial(first, last, replacementField, trivialType, typeSize);
@@ -508,9 +460,7 @@ namespace detail {
                 using ratio = typename std::tuple_element_t<I, std_ratios>::type;
                 if(ratio::num == num && ratio::den == den) {
                     oStr = formatTimeFixedRatio<ratio>(value, timeType, replacementField);
-                    if(!oStr) {
-                        failed = true;
-                    }
+                    if(!oStr) { failed = true; }
                     return false;
                 }
                 return true;
@@ -520,26 +470,16 @@ namespace detail {
                 (format_std_ratio(std::integral_constant<std::size_t, Is>{}) && ...);
             }(std::make_index_sequence<std::tuple_size_v<std_ratios>>{});
 
-            if(failed) {
-                return std::nullopt;
-            }
-            if(oStr) {
-                return oStr;
-            }
+            if(failed) { return std::nullopt; }
+            if(oStr) { return oStr; }
 
             if(replacementField == "{}" || replacementField == "{:%Q%q}") {
-                if(den == 1) {
-                    return fmt::format("{}[{}]s", value, num);
-                }
+                if(den == 1) { return fmt::format("{}[{}]s", value, num); }
                 return fmt::format("{}[{}/{}]s", value, num, den);
             }
-            if(replacementField == "{:%Q}") {
-                return fmt::format("{}", value);
-            }
+            if(replacementField == "{:%Q}") { return fmt::format("{}", value); }
             if(replacementField == "{:%q}") {
-                if(den == 1) {
-                    return fmt::format("[{}]s", num);
-                }
+                if(den == 1) { return fmt::format("[{}]s", num); }
                 return fmt::format("[{}/{}]s", num, den);
             }
 
@@ -559,13 +499,9 @@ namespace detail {
         ParseResult<Iterator> parseTime(Iterator         first,
                                         Iterator         last,
                                         std::string_view replacementField) {
-            if(first == last) {
-                return std::nullopt;
-            }
+            if(first == last) { return std::nullopt; }
             auto const trivialTypeId = parseTimeTypeIdentifier(*first);
-            if(!trivialTypeId) {
-                return std::nullopt;
-            }
+            if(!trivialTypeId) { return std::nullopt; }
             ++first;
             auto const [timeType, numeratorTypeSize, denominatorTypeSize, timeSize]
               = *trivialTypeId;
@@ -577,33 +513,23 @@ namespace detail {
             }
 
             auto const numeratorOpt = extractUnsigned(first, last, numeratorTypeSize);
-            if(!numeratorOpt) {
-                return std::nullopt;
-            }
+            if(!numeratorOpt) { return std::nullopt; }
             std::uint64_t const numerator = *numeratorOpt;
             first += static_cast<std::make_signed_t<std::size_t>>(byteSize(numeratorTypeSize));
             auto const denominatorOpt = extractUnsigned(first, last, denominatorTypeSize);
-            if(!denominatorOpt) {
-                return std::nullopt;
-            }
+            if(!denominatorOpt) { return std::nullopt; }
             std::uint64_t const denominator = *denominatorOpt;
             first += static_cast<std::make_signed_t<std::size_t>>(byteSize(denominatorTypeSize));
             auto const valueOpt = extractSigned(first, last, timeSizeToTypeSize(timeSize));
-            if(!valueOpt) {
-                return std::nullopt;
-            }
+            if(!valueOpt) { return std::nullopt; }
             std::int64_t const value = *valueOpt;
             first += static_cast<std::make_signed_t<std::size_t>>(byteSize(timeSize));
 
-            if(denominator == 0 || numerator == 0) {
-                return std::nullopt;
-            }
+            if(denominator == 0 || numerator == 0) { return std::nullopt; }
 
             auto const optionalTrivial
               = formatTime(numerator, denominator, value, timeType, replacementField);
-            if(!optionalTrivial) {
-                return std::nullopt;
-            }
+            if(!optionalTrivial) { return std::nullopt; }
 
             return {
               {*optionalTrivial, first}
@@ -620,9 +546,7 @@ namespace detail {
                              bool                                   in_list,
                              std::unordered_map<std::uint16_t,
                                                 std::string> const& stringConstantsMap) {
-            if(rangeLayout != RangeLayout::compact) {
-                return std::nullopt;
-            }
+            if(rangeLayout != RangeLayout::compact) { return std::nullopt; }
 
             auto const stringIt = stringConstantsMap.find(static_cast<std::uint16_t>(size));
             if(stringIt == stringConstantsMap.end()) {
@@ -657,12 +581,8 @@ namespace detail {
                                           RangeLayout      rangeLayout,
                                           std::string_view replacementField,
                                           bool             in_list) {
-            if(size > static_cast<std::size_t>(std::distance(first, last))) {
-                return std::nullopt;
-            }
-            if(rangeLayout != RangeLayout::compact) {
-                return std::nullopt;
-            }
+            if(size > static_cast<std::size_t>(std::distance(first, last))) { return std::nullopt; }
+            if(rangeLayout != RangeLayout::compact) { return std::nullopt; }
             std::string parsedString;
             parsedString.resize(size);
 
@@ -763,14 +683,10 @@ namespace detail {
                    bool                                   in_map,
                    std::unordered_map<std::uint16_t,
                                       std::string> const& stringConstantsMap) {
-            if(rangeLayout != RangeLayout::on_ti_each) {
-                return std::nullopt;
-            }
+            if(rangeLayout != RangeLayout::on_ti_each) { return std::nullopt; }
 
             auto const oRangeRepField = fixRangeReplacementField(replacementField);
-            if(!oRangeRepField) {
-                return std::nullopt;
-            }
+            if(!oRangeRepField) { return std::nullopt; }
             auto const& [rangeReplacementField, childReplacementField] = *oRangeRepField;
 
             if((in_map || rangeReplacementField.contains('m')) && size != 2) {
@@ -788,9 +704,7 @@ namespace detail {
                                                          true,
                                                          false,
                                                          stringConstantsMap);
-                if(!optionalStr) {
-                    return std::nullopt;
-                }
+                if(!optionalStr) { return std::nullopt; }
                 tupleString += optionalStr->str;
                 first = optionalStr->pos;
                 --size;
@@ -803,12 +717,8 @@ namespace detail {
                 }
             }
 
-            if(size != 0) {
-                return std::nullopt;
-            }
-            if(printParenthesis) {
-                tupleString += ')';
-            }
+            if(size != 0) { return std::nullopt; }
+            if(printParenthesis) { tupleString += ')'; }
             return {
               {tupleString, first}
             };
@@ -826,9 +736,7 @@ namespace detail {
                                         std::unordered_map<std::uint16_t,
                                                            std::string> const& stringConstantsMap) {
             auto const oRangeRepField = fixRangeReplacementField(replacementField);
-            if(!oRangeRepField) {
-                return std::nullopt;
-            }
+            if(!oRangeRepField) { return std::nullopt; }
             auto const& [rangeReplacementField, childReplacementField] = *oRangeRepField;
 
             bool const printParenthesis = !rangeReplacementField.contains('n');
@@ -846,9 +754,7 @@ namespace detail {
 
             if(rangeLayout == RangeLayout::compact && size != 0 && first != last) {
                 trivialTypeId = parseTrivialTypeIdentifier(*first);
-                if(!trivialTypeId) {
-                    return std::nullopt;
-                }
+                if(!trivialTypeId) { return std::nullopt; }
 
                 ++first;
             }
@@ -871,23 +777,15 @@ namespace detail {
                                              || rangeReplacementField.contains('m'),
                                            stringConstantsMap);
                 }();
-                if(!optionalStr) {
-                    return std::nullopt;
-                }
+                if(!optionalStr) { return std::nullopt; }
                 listString += optionalStr->str;
                 first = optionalStr->pos;
                 --size;
-                if(size != 0) {
-                    listString += ", ";
-                }
+                if(size != 0) { listString += ", "; }
             }
 
-            if(size != 0) {
-                return std::nullopt;
-            }
-            if(printParenthesis) {
-                listString += rangeType == RangeType::list ? ']' : '}';
-            }
+            if(size != 0) { return std::nullopt; }
+            if(printParenthesis) { listString += rangeType == RangeType::list ? ']' : '}'; }
             return {
               {listString, first}
             };
@@ -904,20 +802,14 @@ namespace detail {
                    bool                                   in_map,
                    std::unordered_map<std::uint16_t,
                                       std::string> const& stringConstantsMap) {
-            if(first == last) {
-                return std::nullopt;
-            }
+            if(first == last) { return std::nullopt; }
             auto const rangeTypeId = parseRangeTypeIdentifier(*first);
-            if(!rangeTypeId) {
-                return std::nullopt;
-            }
+            if(!rangeTypeId) { return std::nullopt; }
             ++first;
             auto const [rangeType, rangeSize, rangeLayout] = *rangeTypeId;
 
             auto optionalSize = extractSize(first, last, rangeSizeToTypeSize(rangeSize));
-            if(!optionalSize) {
-                return std::nullopt;
-            }
+            if(!optionalSize) { return std::nullopt; }
 
             first = optionalSize->second;
             switch(rangeType) {
@@ -977,9 +869,7 @@ namespace detail {
                                         bool                                   in_map,
                                         std::unordered_map<std::uint16_t,
                                                            std::string> const& stringConstantsMap) {
-            if(first == last) {
-                return std::nullopt;
-            }
+            if(first == last) { return std::nullopt; }
             auto const typeId = parseTypeIdentifier(*first);
             switch(typeId) {
             case TypeIdentifier::fmt_string: return std::nullopt;
@@ -1005,15 +895,11 @@ namespace detail {
                                           std::string> const& stringConstantsMap) {
             auto iterator             = first;
             auto optionalFmtRangeSize = parseFmtStringTypeIdentifier(*iterator, type);
-            if(!optionalFmtRangeSize) {
-                return std::nullopt;
-            }
+            if(!optionalFmtRangeSize) { return std::nullopt; }
             ++iterator;
             auto optionalSize
               = extractSize(iterator, last, rangeSizeToTypeSize(*optionalFmtRangeSize));
-            if(!optionalSize) {
-                return std::nullopt;
-            }
+            if(!optionalSize) { return std::nullopt; }
 
             iterator = optionalSize->second;
 
@@ -1046,13 +932,9 @@ namespace detail {
                 fmtString = fmtStringIt->second;
             }
 
-            if(!checkReplacementFieldCount(fmtString)) {
-                return std::nullopt;
-            }
+            if(!checkReplacementFieldCount(fmtString)) { return std::nullopt; }
 
-            if(!allCharsValid(fmtString)) {
-                return std::nullopt;
-            }
+            if(!allCharsValid(fmtString)) { return std::nullopt; }
             return {
               {fmtString, iterator}
             };
@@ -1069,9 +951,7 @@ namespace detail {
             auto       iterator          = first;
             auto const optionalFmtString = parseFmtString(iterator, last, type, stringConstantsMap);
 
-            if(!optionalFmtString) {
-                return std::nullopt;
-            }
+            if(!optionalFmtString) { return std::nullopt; }
             std::string_view fmtString = optionalFmtString->str;
             iterator                   = optionalFmtString->pos;
 
@@ -1081,24 +961,18 @@ namespace detail {
             while(iterator != last) {
                 auto const optionalReplacementField
                   = getNextReplacementFieldFromFmtStringAndAppendStrings(ret, fmtString);
-                if(!optionalReplacementField) {
-                    break;
-                }
+                if(!optionalReplacementField) { break; }
                 auto const optionalStr = parseFromTypeId(iterator,
                                                          last,
                                                          *optionalReplacementField,
                                                          false,
                                                          false,
                                                          stringConstantsMap);
-                if(!optionalStr) {
-                    return std::nullopt;
-                }
+                if(!optionalStr) { return std::nullopt; }
                 iterator = optionalStr->pos;
                 ret += optionalStr->str;
             }
-            if(!fmtString.empty()) {
-                return std::nullopt;
-            }
+            if(!fmtString.empty()) { return std::nullopt; }
             return {
               {ret, iterator}
             };
@@ -1115,31 +989,21 @@ namespace detail {
                         bool                                   in_map,
                         std::unordered_map<std::uint16_t,
                                            std::string> const& stringConstantsMap) {
-            if(first == last) {
-                return std::nullopt;
-            }
+            if(first == last) { return std::nullopt; }
 
             TypeIdentifier const typeId = static_cast<TypeIdentifier>(*first & std::byte{0x03});
             if(typeId == TypeIdentifier::fmt_string) {
                 if(parseFmtStringTypeIdentifier(*first, FmtStringType::sub)) {
                     auto const optionalFmtTypeSize
                       = parseFmtStringTypeIdentifier(*first, FmtStringType::sub);
-                    if(!optionalFmtTypeSize) {
-                        return std::nullopt;
-                    }
-                    if(replacementField != "{}") {
-                        return std::nullopt;
-                    }
+                    if(!optionalFmtTypeSize) { return std::nullopt; }
+                    if(replacementField != "{}") { return std::nullopt; }
                     return parseFmt(first, last, FmtStringType::sub, stringConstantsMap);
                 }
                 auto const optionalFmtTypeSize
                   = parseFmtStringTypeIdentifier(*first, FmtStringType::cataloged_sub);
-                if(!optionalFmtTypeSize) {
-                    return std::nullopt;
-                }
-                if(replacementField != "{}") {
-                    return std::nullopt;
-                }
+                if(!optionalFmtTypeSize) { return std::nullopt; }
+                if(replacementField != "{}") { return std::nullopt; }
                 return parseFmt(first, last, FmtStringType::cataloged_sub, stringConstantsMap);
             }
             return parseType(first, last, replacementField, in_list, in_map, stringConstantsMap);
@@ -1175,9 +1039,7 @@ parse(std::span<std::byte const>             buffer,
 
     bool const contains_end = std::ranges::find(buffer, protocol::End_marker) != buffer.end();
 
-    if(2 > buffer.size() || !contains_end) {
-        return {std::nullopt, buffer, unparsed_bytes};
-    }
+    if(2 > buffer.size() || !contains_end) { return {std::nullopt, buffer, unparsed_bytes}; }
 
     detail::FmtStringType const fmtStringType = [&]() {
         if(detail::parseFmtStringTypeIdentifier(buffer[1], detail::FmtStringType::normal)) {
@@ -1190,9 +1052,7 @@ parse(std::span<std::byte const>             buffer,
     auto const     optionalStr
       = parser.parseFmt(std::next(buffer.begin()), buffer.end(), fmtStringType, stringConstantsMap);
 
-    if(!optionalStr) {
-        return {std::nullopt, buffer, unparsed_bytes};
-    }
+    if(!optionalStr) { return {std::nullopt, buffer, unparsed_bytes}; }
     if(optionalStr->pos == buffer.end() || *optionalStr->pos != protocol::End_marker) {
         return {std::nullopt, buffer, unparsed_bytes};
     }

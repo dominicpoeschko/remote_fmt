@@ -74,18 +74,10 @@ namespace remote_fmt { namespace detail {
 
     template<typename T>
     constexpr TypeSize typeToTypeSize() {
-        if constexpr(sizeof(T) == 8) {
-            return TypeSize::_8;
-        }
-        if constexpr(sizeof(T) == 4) {
-            return TypeSize::_4;
-        }
-        if constexpr(sizeof(T) == 2) {
-            return TypeSize::_2;
-        }
-        if constexpr(sizeof(T) == 1) {
-            return TypeSize::_1;
-        }
+        if constexpr(sizeof(T) == 8) { return TypeSize::_8; }
+        if constexpr(sizeof(T) == 4) { return TypeSize::_4; }
+        if constexpr(sizeof(T) == 2) { return TypeSize::_2; }
+        if constexpr(sizeof(T) == 1) { return TypeSize::_1; }
     }
 
     constexpr std::size_t byteSize(TypeSize typeSize) {
@@ -133,15 +125,9 @@ namespace remote_fmt { namespace detail {
     template<std::integral T>
     constexpr TypeSize sizeToTypeSize(T size) {
         static_assert(!std::is_signed_v<T>, "Type must be unsigned!");
-        if(size > std::numeric_limits<std::uint32_t>::max()) {
-            return TypeSize::_8;
-        }
-        if(size > std::numeric_limits<std::uint16_t>::max()) {
-            return TypeSize::_4;
-        }
-        if(size > std::numeric_limits<std::uint8_t>::max()) {
-            return TypeSize::_2;
-        }
+        if(size > std::numeric_limits<std::uint32_t>::max()) { return TypeSize::_8; }
+        if(size > std::numeric_limits<std::uint16_t>::max()) { return TypeSize::_4; }
+        if(size > std::numeric_limits<std::uint8_t>::max()) { return TypeSize::_2; }
         return TypeSize::_1;
     }
 
@@ -159,9 +145,7 @@ namespace remote_fmt { namespace detail {
     template<std::integral T>
     constexpr RangeSize sizeToRangeSize(T size) {
         static_assert(!std::is_signed_v<T>, "Type must be unsigned!");
-        if(size > std::numeric_limits<std::uint8_t>::max()) {
-            return RangeSize::_2;
-        }
+        if(size > std::numeric_limits<std::uint8_t>::max()) { return RangeSize::_2; }
         return RangeSize::_1;
     }
 
@@ -214,14 +198,10 @@ namespace remote_fmt { namespace detail {
     constexpr std::optional<RangeSize> parseFmtStringTypeIdentifier(std::byte     value,
                                                                     FmtStringType type) {
         TypeIdentifier const typeId = parseTypeIdentifier(value);
-        if(typeId != detail::TypeIdentifier::fmt_string) {
-            return std::nullopt;
-        }
+        if(typeId != detail::TypeIdentifier::fmt_string) { return std::nullopt; }
 
         FmtStringType const fmtType = static_cast<FmtStringType>((value & std::byte{0x30}) >> 4);
-        if(fmtType != type) {
-            return std::nullopt;
-        }
+        if(fmtType != type) { return std::nullopt; }
 
         RangeSize const rangeSize = static_cast<RangeSize>((value & std::byte{0x04}) >> 2);
 
@@ -253,9 +233,7 @@ namespace remote_fmt { namespace detail {
                                       TypeSize>>
     parseTrivialTypeIdentifier(std::byte value) {
         TypeIdentifier const typeId = parseTypeIdentifier(value);
-        if(typeId != TypeIdentifier::trivial) {
-            return std::nullopt;
-        }
+        if(typeId != TypeIdentifier::trivial) { return std::nullopt; }
 
         TrivialType const trivialType = static_cast<TrivialType>((value & std::byte{0x70}) >> 4);
         if(static_cast<std::uint8_t>(trivialType)
@@ -297,9 +275,7 @@ namespace remote_fmt { namespace detail {
                                        RangeLayout>>
     parseRangeTypeIdentifier(std::byte value) {
         TypeIdentifier const typeId = parseTypeIdentifier(value);
-        if(typeId != TypeIdentifier::range) {
-            return std::nullopt;
-        }
+        if(typeId != TypeIdentifier::range) { return std::nullopt; }
 
         RangeSize const   rangeSize   = static_cast<RangeSize>((value & std::byte{0x04}) >> 2);
         RangeType const   rangeType   = static_cast<RangeType>((value & std::byte{0x70}) >> 4);
@@ -342,9 +318,7 @@ namespace remote_fmt { namespace detail {
                                        TimeSize>>
     parseTimeTypeIdentifier(std::byte value) {
         TypeIdentifier const typeId = parseTypeIdentifier(value);
-        if(typeId != TypeIdentifier::time) {
-            return std::nullopt;
-        }
+        if(typeId != TypeIdentifier::time) { return std::nullopt; }
 
         TypeSize const num_ts   = static_cast<TypeSize>((value & std::byte{0x0C}) >> 2);
         TypeSize const den_ts   = static_cast<TypeSize>((value & std::byte{0x30}) >> 4);

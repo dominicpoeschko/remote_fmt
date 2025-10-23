@@ -130,12 +130,8 @@ namespace detail {
     }
 
     constexpr bool isValidChar(char character) {
-        if(character > '~') {
-            return false;
-        }
-        if(character < ' ') {
-            return character == '\n';
-        }
+        if(character > '~') { return false; }
+        if(character < ' ') { return character == '\n'; }
         return true;
     }
 
@@ -158,9 +154,7 @@ namespace detail {
 
     template<typename T>
     concept is_tuple_like = requires {
-        {
-            std::tuple_size<T>::value
-        } -> std::convertible_to<std::size_t>;
+        { std::tuple_size<T>::value } -> std::convertible_to<std::size_t>;
     };
 
     template<typename T>
@@ -168,15 +162,9 @@ namespace detail {
 
     template<typename T>
     concept is_string_like = std::is_convertible_v<T, std::string_view> && requires(T value) {
-        {
-            value.size()
-        } -> std::convertible_to<std::size_t>;
-        {
-            value.data()
-        } -> std::convertible_to<char const*>;
-        {
-            value.starts_with(std::string_view{})
-        } -> std::convertible_to<bool>;
+        { value.size() } -> std::convertible_to<std::size_t>;
+        { value.data() } -> std::convertible_to<char const*>;
+        { value.starts_with(std::string_view{}) } -> std::convertible_to<bool>;
     };
 
     template<typename T>
@@ -351,9 +339,7 @@ struct formatter<T> {
             if constexpr(std::is_same_v<char*, std::remove_cvref_t<T>>
                          || std::is_same_v<char const*, std::remove_cvref_t<T>>)
             {
-                if(value == nullptr) {
-                    return {};
-                }
+                if(value == nullptr) { return {}; }
             }
             return value;
         }();
@@ -410,9 +396,7 @@ struct formatter<char const (&)[N]> {
 };
 
 template<typename T>
-    requires std::is_enum_v<T>
-          && (!std::is_same_v<std::byte,
-                              T>)
+    requires std::is_enum_v<T> && (!std::is_same_v<std::byte, T>)
 struct formatter<T> {
     template<typename Printer>
     constexpr auto format(T const& value,
@@ -498,9 +482,7 @@ struct formatter<T> {
                 }
             }
         } else {
-            for(auto const& element : range) {
-                formatter<value_t>{}.format(element, printer);
-            }
+            for(auto const& element : range) { formatter<value_t>{}.format(element, printer); }
         }
     }
 };
@@ -538,9 +520,7 @@ struct formatter<std::optional<T>> {
 
         printer.printHelper(static_cast<std::uint8_t>(optional.has_value() ? 1 : 0));
 
-        if(optional) {
-            return formatter<std::remove_cvref_t<T>>{}.format(*optional, printer);
-        }
+        if(optional) { return formatter<std::remove_cvref_t<T>>{}.format(*optional, printer); }
     }
 };
 
@@ -584,9 +564,7 @@ struct formatter<fmt::detail::styled_arg<T>> {
                 flags |= 8U;
             }
         }
-        if(style.has_emphasis()) {
-            flags |= 16U;
-        }
+        if(style.has_emphasis()) { flags |= 16U; }
 
         printer.printHelper(flags);
 
@@ -598,12 +576,8 @@ struct formatter<fmt::detail::styled_arg<T>> {
             }
         };
 
-        if(style.has_foreground()) {
-            addColor(style.get_foreground());
-        }
-        if(style.has_background()) {
-            addColor(style.get_background());
-        }
+        if(style.has_foreground()) { addColor(style.get_foreground()); }
+        if(style.has_background()) { addColor(style.get_background()); }
         if(style.has_emphasis()) {
             printer.printHelper(static_cast<std::uint8_t>(style.get_emphasis()));
         }
