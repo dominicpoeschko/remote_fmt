@@ -1,8 +1,30 @@
 diff --git a/include/fmt/format.h b/include/fmt/format.h
-index 25153a4d..8883de70 100644
+index 8c6d0451..a3236077 100644
 --- a/include/fmt/format.h
 +++ b/include/fmt/format.h
-@@ -1269,7 +1269,7 @@ class utf8_to_utf16 {
+@@ -1286,51 +1286,51 @@ FMT_CONSTEXPR inline auto format_base2e(int base_bits, OutputIt out, UInt value,
+                                         int num_digits, bool upper = false)
+     -> OutputIt {
+   if (auto ptr = to_pointer<Char>(out, to_unsigned(num_digits))) {
+     format_base2e(base_bits, ptr, value, num_digits, upper);
+     return out;
+   }
+   // Make buffer large enough for any base.
+   char buffer[num_bits<UInt>()];
+   if (is_constant_evaluated()) fill_n(buffer, sizeof(buffer), '\0');
+   format_base2e(base_bits, buffer, value, num_digits, upper);
+   return detail::copy_noinline<Char>(buffer, buffer + num_digits, out);
+ }
+ 
+ // A converter from UTF-8 to UTF-16.
+ class utf8_to_utf16 {
+  private:
+   basic_memory_buffer<wchar_t> buffer_;
+ 
+  public:
+   FMT_API explicit utf8_to_utf16(string_view s);
+   inline operator basic_string_view<wchar_t>() const {
+     return {&buffer_[0], size()};
    }
    inline auto size() const -> size_t { return buffer_.size() - 1; }
    inline auto c_str() const -> const wchar_t* { return &buffer_[0]; }
@@ -10,4 +32,26 @@ index 25153a4d..8883de70 100644
 +  /*inline auto str() const -> std::wstring { return {&buffer_[0], size()}; }*/
  };
  
- enum class to_utf8_error_policy { abort, replace };
+ enum class to_utf8_error_policy { abort, replace, wtf };
+ 
+ inline void to_utf8_3bytes(buffer<char>& buf, uint32_t cp) {
+   buf.push_back(static_cast<char>(0xe0 | (cp >> 12)));
+   buf.push_back(static_cast<char>(0x80 | ((cp & 0xfff) >> 6)));
+   buf.push_back(static_cast<char>(0x80 | (cp & 0x3f)));
+ }
+ 
+ // A converter from UTF-16/UTF-32 (host endian) to UTF-8.
+ template <typename WChar, typename Buffer = memory_buffer> class to_utf8 {
+  private:
+   Buffer buffer_;
+ 
+  public:
+   to_utf8() {}
+   explicit to_utf8(basic_string_view<WChar> s,
+                    to_utf8_error_policy policy = to_utf8_error_policy::abort) {
+     static_assert(sizeof(WChar) == 2 || sizeof(WChar) == 4,
+                   "expected utf16 or utf32");
+     if (!convert(s, policy)) {
+       FMT_THROW(std::runtime_error(sizeof(WChar) == 2 ? "invalid utf16"
+                                                       : "invalid utf32"));
+     }

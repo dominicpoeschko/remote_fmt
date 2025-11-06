@@ -29,8 +29,10 @@ else()
         QUIET
         GIT_REPOSITORY https://github.com/fmtlib/fmt.git
         GIT_TAG master
-        PATCH_COMMAND git apply ${remote_fmt_dir}/fmt.patch
-        UPDATE_DISCONNECTED TRUE)
+        PATCH_COMMAND git reset --hard HEAD && git clean -fdx && git apply --3way ${remote_fmt_dir}/fmt.patch
+        UPDATE_COMMAND git fetch origin && git reset --hard @{u} && git clean -fdx && git apply --3way
+                       ${remote_fmt_dir}/fmt.patch
+        UPDATE_DISCONNECTED FALSE)
 
     target_include_directories(remote_fmt INTERFACE ${fmt_SOURCE_DIR}/include)
     target_compile_definitions(remote_fmt INTERFACE FMT_STATIC_THOUSANDS_SEPARATOR=1)
