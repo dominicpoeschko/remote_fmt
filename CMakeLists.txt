@@ -119,7 +119,8 @@ function(target_generate_string_constants targetname)
         PRE_LINK COMMAND_EXPAND_LISTS
         COMMAND ${command}
         BYPRODUCTS ${bin_dir}/${targetname}_string_constants.cpp ${bin_dir}/${targetname}_string_constants.obj
-                   ${bin_dir}/${targetname}_string_constants.json)
+                   ${bin_dir}/${targetname}_string_constants.json
+        COMMENT "Extracting string constants for ${targetname}")
 
     set_property(
         TARGET ${targetname}

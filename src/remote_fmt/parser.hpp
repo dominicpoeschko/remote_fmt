@@ -383,7 +383,12 @@ namespace detail {
                   try {
                       return fmt::format(fmt::runtime(replacementField), value);
                   } catch(std::exception const& e) {
-                      errorMessagef(fmt::format("bad format {}", e.what()));
+                      errorMessagef(fmt::format(
+                        "bad format for replacement field {:?}: {} (type: {}, size: {} bytes)",
+                        replacementField,
+                        e.what(),
+                        magic_enum::enum_name(trivialType),
+                        byteSize(typeSize)));
                       return std::nullopt;
                   }
               },
@@ -416,7 +421,15 @@ namespace detail {
                     return fmt::format(fmt::runtime(replacementField), duration{value});
                 }
             } catch(std::exception const& e) {
-                errorMessagef(fmt::format("bad format {}", e.what()));
+                errorMessagef(
+                  fmt::format("bad format for replacement field {:?}: {} (timeType: {}, ratio: "
+                              "{}/{}, value: {})",
+                              replacementField,
+                              e.what(),
+                              magic_enum::enum_name(timeType),
+                              Ratio::num,
+                              Ratio::den,
+                              value));
             }
             return std::nullopt;
         }
@@ -490,7 +503,13 @@ namespace detail {
                   / static_cast<double>(den)};
                 return fmt::format(fmt::runtime(replacementField), dur);
             } catch(std::exception const& e) {
-                errorMessagef(fmt::format("bad format {}", e.what()));
+                errorMessagef(fmt::format(
+                  "bad format for replacement field {:?}: {} (custom ratio: {}/{}, value: {})",
+                  replacementField,
+                  e.what(),
+                  num,
+                  den,
+                  value));
                 return std::nullopt;
             }
         }
@@ -569,7 +588,14 @@ namespace detail {
                   {ret, first}
                 };
             } catch(std::exception const& e) {
-                errorMessagef(fmt::format("bad format {}\n", e.what()));
+                errorMessagef(
+                  fmt::format("bad format for replacement field {:?}: {} (string: \"{}\", length: "
+                              "{}, in_list: {})\n",
+                              replacementField,
+                              e.what(),
+                              catalogedString,
+                              catalogedString.length(),
+                              in_list));
                 return std::nullopt;
             }
         }
@@ -605,7 +631,14 @@ namespace detail {
                   {ret, string_end}
                 };
             } catch(std::exception const& e) {
-                errorMessagef(fmt::format("bad format {}", e.what()));
+                errorMessagef(
+                  fmt::format("bad format for replacement field {:?}: {} (string: \"{}\", size: "
+                              "{}, in_list: {})",
+                              replacementField,
+                              e.what(),
+                              parsedString,
+                              size,
+                              in_list));
                 return std::nullopt;
             }
         }
