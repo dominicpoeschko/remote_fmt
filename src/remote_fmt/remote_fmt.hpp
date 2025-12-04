@@ -63,8 +63,8 @@ namespace remote_fmt {
 
 // Protocol constants
 namespace protocol {
-    constexpr std::byte Start_marker{0x55};
-    constexpr std::byte End_marker{0xAA};
+    static constexpr std::byte Start_marker{0x55};
+    static constexpr std::byte End_marker{0xAA};
 }   // namespace protocol
 
 #ifndef REMOTE_FMT_USE_CATALOG
