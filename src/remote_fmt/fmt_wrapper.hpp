@@ -22,6 +22,7 @@
 #include <fmt/format.h>
 #include <fmt/ostream.h>
 #include <fmt/ranges.h>
+#include <fmt/std.h>
 
 #ifdef __GNUC__
     #pragma GCC diagnostic pop

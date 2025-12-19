@@ -18,6 +18,7 @@
 #endif
 
 #include <cstdint>
+#include <expected>
 #include <fstream>
 #include <map>
 #include <string>
@@ -25,16 +26,16 @@
 
 namespace remote_fmt {
 
-inline std::pair<std::unordered_map<std::uint16_t,
-                                    std::string>,
-                 std::string>
+inline std::expected<std::unordered_map<std::uint16_t,
+                                        std::string>,
+                     std::string>
 parseStringConstantsFromJsonFile(std::string const& file) {
     try {
         std::ifstream        fileStream(file);
         nlohmann::json const data = nlohmann::json::parse(fileStream);
-        return {data["StringConstants"].get<std::unordered_map<std::uint16_t, std::string>>(), ""};
+        return data["StringConstants"].get<std::unordered_map<std::uint16_t, std::string>>();
     } catch(std::exception const& e) {
-        return {{}, fmt::format("read format strings failed: {}", e.what())};
+        return std::unexpected(fmt::format("read format strings failed: {}", e.what()));
     }
 }
 }   // namespace remote_fmt
