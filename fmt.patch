@@ -1,5 +1,5 @@
 diff --git a/include/fmt/format.h b/include/fmt/format.h
-index 8c6d0451..a3236077 100644
+index 4a65300..d9afe71 100644
 --- a/include/fmt/format.h
 +++ b/include/fmt/format.h
 @@ -1286,51 +1286,51 @@ FMT_CONSTEXPR inline auto format_base2e(int base_bits, OutputIt out, UInt value,
@@ -32,13 +32,7 @@ index 8c6d0451..a3236077 100644
 +  /*inline auto str() const -> std::wstring { return {&buffer_[0], size()}; }*/
  };
  
- enum class to_utf8_error_policy { abort, replace, wtf };
- 
- inline void to_utf8_3bytes(buffer<char>& buf, uint32_t cp) {
-   buf.push_back(static_cast<char>(0xe0 | (cp >> 12)));
-   buf.push_back(static_cast<char>(0x80 | ((cp & 0xfff) >> 6)));
-   buf.push_back(static_cast<char>(0x80 | (cp & 0x3f)));
- }
+ enum class to_utf8_error_policy { abort, replace };
  
  // A converter from UTF-16/UTF-32 (host endian) to UTF-8.
  template <typename WChar, typename Buffer = memory_buffer> class to_utf8 {
@@ -55,3 +49,9 @@ index 8c6d0451..a3236077 100644
        FMT_THROW(std::runtime_error(sizeof(WChar) == 2 ? "invalid utf16"
                                                        : "invalid utf32"));
      }
+   }
+   operator string_view() const { return string_view(&buffer_[0], size()); }
+   auto size() const -> size_t { return buffer_.size() - 1; }
+   auto c_str() const -> const char* { return &buffer_[0]; }
+   auto str() const -> std::string { return std::string(&buffer_[0], size()); }
+ 

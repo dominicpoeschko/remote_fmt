@@ -9,42 +9,61 @@ set(remote_fmt_dir
 
 add_library(remote_fmt INTERFACE)
 
+include(cmake_helpers/FindOrFetch.cmake)
+
 if(NOT CMAKE_CROSSCOMPILING)
     project(remote_fmt VERSION 0.1.0)
-    include(cmake_helpers/FindOrFetch.cmake)
 
     option(FMT_INSTALL "" OFF)
-    find_or_fetch_package(fmt GIT_REPOSITORY https://github.com/fmtlib/fmt.git GIT_TAG master)
+    find_or_fetch_package(
+        fmt
+        GIT_REPOSITORY
+        https://github.com/fmtlib/fmt.git
+        GIT_TAG
+        12.1.0
+        GIT_BRANCH
+        master)
 
-    find_or_fetch_package(nlohmann_json GIT_REPOSITORY https://github.com/nlohmann/json GIT_TAG master)
+    find_or_fetch_package(
+        nlohmann_json
+        GIT_REPOSITORY
+        https://github.com/nlohmann/json
+        GIT_TAG
+        v3.12.0
+        GIT_BRANCH
+        master)
 
     find_or_fetch_package(magic_enum GIT_REPOSITORY https://github.com/Neargye/magic_enum GIT_TAG master)
 else()
-    include(FetchContent)
     option(FMT_INSTALL "" OFF)
     mark_as_advanced(FORCE FMT_INSTALL)
 
-    FetchContent_Populate(
+    populate_package(
         fmt
         QUIET
-        GIT_REPOSITORY https://github.com/fmtlib/fmt.git
-        GIT_TAG master
-        PATCH_COMMAND git reset --hard HEAD && git clean -fdx && git apply --3way ${remote_fmt_dir}/fmt.patch
-        UPDATE_COMMAND git fetch origin && git reset --hard @{u} && git clean -fdx && git apply --3way
-                       ${remote_fmt_dir}/fmt.patch
-        UPDATE_DISCONNECTED FALSE)
+        GIT_REPOSITORY
+        https://github.com/fmtlib/fmt.git
+        GIT_TAG
+        12.1.0
+        GIT_BRANCH
+        master
+        PATCH_FILE
+        ${remote_fmt_dir}/fmt.patch)
 
     target_include_directories(remote_fmt INTERFACE ${fmt_SOURCE_DIR}/include)
     target_compile_definitions(remote_fmt INTERFACE FMT_STATIC_THOUSANDS_SEPARATOR=1)
 
     target_compile_options(remote_fmt INTERFACE "-DFMT_ASSERT(condition, message)=assert(condition)")
 
-    FetchContent_Populate(
+    populate_package(
         magic_enum
         QUIET
-        GIT_REPOSITORY https://github.com/Neargye/magic_enum
-        GIT_TAG master
-        GIT_SHALLOW TRUE)
+        GIT_REPOSITORY
+        https://github.com/Neargye/magic_enum
+        GIT_TAG
+        v0.9.7
+        GIT_BRANCH
+        master)
 
     target_include_directories(remote_fmt INTERFACE ${magic_enum_SOURCE_DIR}/include)
 
