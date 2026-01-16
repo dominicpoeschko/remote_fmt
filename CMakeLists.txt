@@ -39,7 +39,7 @@ else()
     mark_as_advanced(FORCE FMT_INSTALL)
 
     populate_package(
-        fmt
+        fmt_uc
         QUIET
         GIT_REPOSITORY
         https://github.com/fmtlib/fmt.git
@@ -50,13 +50,13 @@ else()
         PATCH_FILE
         ${remote_fmt_dir}/fmt.patch)
 
-    target_include_directories(remote_fmt INTERFACE ${fmt_SOURCE_DIR}/include)
+    target_include_directories(remote_fmt INTERFACE ${fmt_uc_SOURCE_DIR}/include)
     target_compile_definitions(remote_fmt INTERFACE FMT_STATIC_THOUSANDS_SEPARATOR=1)
 
     target_compile_options(remote_fmt INTERFACE "-DFMT_ASSERT(condition, message)=assert(condition)")
 
     populate_package(
-        magic_enum
+        magic_enum_uc
         QUIET
         GIT_REPOSITORY
         https://github.com/Neargye/magic_enum
@@ -65,7 +65,7 @@ else()
         GIT_BRANCH
         master)
 
-    target_include_directories(remote_fmt INTERFACE ${magic_enum_SOURCE_DIR}/include)
+    target_include_directories(remote_fmt INTERFACE ${magic_enum_uc_SOURCE_DIR}/include)
 
 endif()
 
