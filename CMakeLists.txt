@@ -33,7 +33,14 @@ if(NOT CMAKE_CROSSCOMPILING)
         GIT_BRANCH
         master)
 
-    find_or_fetch_package(magic_enum GIT_REPOSITORY https://github.com/Neargye/magic_enum GIT_TAG master)
+    find_or_fetch_package(
+        magic_enum
+        GIT_REPOSITORY
+        https://github.com/Neargye/magic_enum
+        GIT_TAG
+        v0.9.7
+        GIT_BRANCH
+        master)
 else()
     option(FMT_INSTALL "" OFF)
     mark_as_advanced(FORCE FMT_INSTALL)
