@@ -9,7 +9,15 @@ set(remote_fmt_dir
 
 add_library(remote_fmt INTERFACE)
 
-include(cmake_helpers/FindOrFetch.cmake)
+include(FetchContent)
+FetchContent_Declare(
+    cmake_helpers
+    GIT_REPOSITORY https://github.com/dominicpoeschko/cmake_helpers.git
+    GIT_TAG master
+)
+FetchContent_MakeAvailable(cmake_helpers)
+
+include(${cmake_helpers_SOURCE_DIR}/FindOrFetch.cmake)
 
 if(NOT CMAKE_CROSSCOMPILING)
     project(remote_fmt VERSION 0.1.0)

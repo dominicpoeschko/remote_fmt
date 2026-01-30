@@ -1,6 +1,3 @@
 [submodule "string_constant"]
 	path = string_constant
 	url = https://github.com/dominicpoeschko/string_constant.git
-[submodule "cmake_helpers"]
-	path = cmake_helpers
-	url = https://github.com/dominicpoeschko/cmake_helpers.git
