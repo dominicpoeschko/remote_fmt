@@ -35,7 +35,7 @@ namespace remote_fmt { namespace detail {
     enum class TypeSize : std::uint8_t { _1, _2, _4, _8 };
     enum class RangeSize : std::uint8_t { _1, _2 };
     enum class TimeSize : std::uint8_t { _4, _8 };
-    enum class ExtendedTypeIdentifier : std::uint8_t { styled, optional };
+    enum class ExtendedTypeIdentifier : std::uint8_t { styled, optional, expected };
 
     template<typename T,
              typename Append>

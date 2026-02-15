@@ -9,6 +9,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -521,6 +522,25 @@ struct formatter<std::optional<T>> {
         printer.printHelper(static_cast<std::uint8_t>(optional.has_value() ? 1 : 0));
 
         if(optional) { return formatter<std::remove_cvref_t<T>>{}.format(*optional, printer); }
+    }
+};
+
+template<typename T, typename E>
+struct formatter<std::expected<T, E>> {
+    template<typename Printer>
+    constexpr auto format(std::expected<T,
+                                        E> const& expected,
+                          Printer&                printer) const {
+        detail::appendExtendedTypeIdentifier<detail::ExtendedTypeIdentifier::expected>(
+          [&](auto const&... valueArgs) { printer.printHelper(valueArgs...); });
+
+        printer.printHelper(static_cast<std::uint8_t>(expected.has_value() ? 1 : 0));
+
+        if(expected.has_value()) {
+            return formatter<std::remove_cvref_t<T>>{}.format(*expected, printer);
+        } else {
+            return formatter<std::remove_cvref_t<E>>{}.format(expected.error(), printer);
+        }
     }
 };
 

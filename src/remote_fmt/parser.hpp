@@ -183,6 +183,42 @@ namespace detail {
         }
     };
 
+    template<>
+    struct ExtendedTypeIdentifierParser<ExtendedTypeIdentifier::expected> {
+        template<typename Iterator,
+                 typename Parser>
+        static ParseResult<Iterator>
+        parse(Iterator                               first,
+              Iterator                               last,
+              std::string_view                       replacementField,
+              bool                                   in_map,
+              bool                                   in_list,
+              std::unordered_map<std::uint16_t,
+                                 std::string> const& stringConstantsMap,
+              Parser&                                parser) {
+            if(1 > static_cast<std::size_t>(std::distance(first, last))) { return std::nullopt; }
+            std::uint8_t const hasValue = static_cast<std::uint8_t>(*first);
+            ++first;
+
+            if(hasValue != 0 && hasValue != 1) { return std::nullopt; }
+
+            auto const inner_result = parser.parseFromTypeId(first,
+                                                             last,
+                                                             replacementField,
+                                                             in_list,
+                                                             in_map,
+                                                             stringConstantsMap);
+            if(!inner_result) { return std::nullopt; }
+
+            if(hasValue == 1) {
+                return ParseResult_<Iterator>{fmt::format("expected({})", inner_result->str),
+                                              inner_result->pos};
+            }
+            return ParseResult_<Iterator>{fmt::format("unexpected({})", inner_result->str),
+                                          inner_result->pos};
+        }
+    };
+
     struct Parser {
         std::function<void(std::string_view)> errorMessagef;
 
