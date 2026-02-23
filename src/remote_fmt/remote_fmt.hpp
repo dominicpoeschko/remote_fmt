@@ -537,7 +537,9 @@ struct formatter<std::expected<T, E>> {
         printer.printHelper(static_cast<std::uint8_t>(expected.has_value() ? 1 : 0));
 
         if(expected.has_value()) {
-            return formatter<std::remove_cvref_t<T>>{}.format(*expected, printer);
+            if constexpr(!std::is_void_v<T>) {
+                return formatter<std::remove_cvref_t<T>>{}.format(*expected, printer);
+            }
         } else {
             return formatter<std::remove_cvref_t<E>>{}.format(expected.error(), printer);
         }
