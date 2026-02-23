@@ -219,6 +219,23 @@ namespace detail {
         }
     };
 
+    template<>
+    struct ExtendedTypeIdentifierParser<ExtendedTypeIdentifier::void_type> {
+        template<typename Iterator,
+                 typename Parser>
+        static ParseResult<Iterator>
+        parse(Iterator first,
+              Iterator /*last*/,
+              std::string_view /*replacementField*/,
+              bool /*in_map*/,
+              bool /*in_list*/,
+              std::unordered_map<std::uint16_t,
+                                 std::string> const& /*stringConstantsMap*/,
+              Parser& /*parser*/) {
+            return ParseResult_<Iterator>{"void", first};
+        }
+    };
+
     struct Parser {
         std::function<void(std::string_view)> errorMessagef;
 

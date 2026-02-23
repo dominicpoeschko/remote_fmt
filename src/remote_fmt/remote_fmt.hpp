@@ -525,6 +525,15 @@ struct formatter<std::optional<T>> {
     }
 };
 
+template<>
+struct formatter<void> {
+    template<typename Printer>
+    constexpr auto format(Printer& printer) const {
+        detail::appendExtendedTypeIdentifier<detail::ExtendedTypeIdentifier::void_type>(
+          [&](auto const&... valueArgs) { printer.printHelper(valueArgs...); });
+    }
+};
+
 template<typename T, typename E>
 struct formatter<std::expected<T, E>> {
     template<typename Printer>
@@ -539,6 +548,8 @@ struct formatter<std::expected<T, E>> {
         if(expected.has_value()) {
             if constexpr(!std::is_void_v<T>) {
                 return formatter<std::remove_cvref_t<T>>{}.format(*expected, printer);
+            } else {
+                return formatter<void>{}.format(printer);
             }
         } else {
             return formatter<std::remove_cvref_t<E>>{}.format(expected.error(), printer);
