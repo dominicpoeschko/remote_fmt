@@ -433,9 +433,12 @@ struct formatter<T> {
 
 template<detail::is_range_but_not_string_like T>
 struct formatter<T> {
-    template<typename Printer>
-    constexpr auto format(T const& range,
-                          Printer& printer) const {
+private:
+    template<typename R,
+             typename Printer>
+    static constexpr void formatImpl(R&          range,
+                                     std::size_t size,
+                                     Printer&    printer) {
         auto constexpr rangeType = []() constexpr {
             if constexpr(detail::is_map<T>) {
                 return detail::RangeType::map;
@@ -452,7 +455,6 @@ struct formatter<T> {
                                             || std::is_floating_point_v<value_t>
                                             || std::is_same_v<std::byte, value_t>;
 
-        auto const size      = std::ranges::size(range);
         auto const rangeSize = detail::sizeToRangeSize(size);
         auto const typeIdentifier
           = detail::rangeTypeIdentifier<rangeType,
@@ -468,7 +470,7 @@ struct formatter<T> {
 
         if constexpr(is_trivial_formatable) {
             if constexpr(is_contiguous) {
-                if(std::ranges::size(range) != 0) {
+                if(size != 0) {
                     formatter<value_t>{}.format(*std::ranges::begin(range), printer);
                     printer.lowprint(std::span{range}.subspan(1));
                 }
@@ -485,6 +487,25 @@ struct formatter<T> {
         } else {
             for(auto const& element : range) { formatter<value_t>{}.format(element, printer); }
         }
+    }
+
+public:
+    template<typename Printer>
+    constexpr auto format(T const& range,
+                          Printer& printer) const
+        requires std::ranges::sized_range<T>
+    {
+        formatImpl(const_cast<T&>(range), std::ranges::size(range), printer);
+    }
+
+    template<typename Printer>
+    constexpr auto format(T&       range,
+                          Printer& printer) const
+        requires(!std::ranges::sized_range<T>) && std::ranges::forward_range<T>
+    {
+        auto       copy = range;
+        auto const size = static_cast<std::size_t>(std::ranges::distance(copy));
+        formatImpl(range, size, printer);
     }
 };
 
