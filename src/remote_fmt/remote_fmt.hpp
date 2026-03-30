@@ -671,7 +671,7 @@ private:
     template<typename... Ts>
         requires(std::is_trivially_copyable_v<Ts> && ...)
     constexpr void printHelper(Ts const&... values) {
-        (lowprint(std::span{std::addressof(values), 1}), ...);
+        (lowprint(std::span<const Ts, 1>{std::addressof(values), 1}), ...);
     }
 
     template<typename T>
