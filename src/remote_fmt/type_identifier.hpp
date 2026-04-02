@@ -34,7 +34,8 @@ namespace remote_fmt { namespace detail {
     enum class TimeType : std::uint8_t { duration, time_point };
     enum class TypeSize : std::uint8_t { _1, _2, _4, _8 };
     enum class RangeSize : std::uint8_t { _1, _2 };
-    enum class TimeSize : std::uint8_t { _4, _8 };
+    enum class NumeratorSize : std::uint8_t { _1, _8 };
+    enum class TimeRepresentation : std::uint8_t { _int32, _int64, _float, _double };
     enum class ExtendedTypeIdentifier : std::uint8_t { styled, optional, expected, void_type };
 
     template<typename T,
@@ -52,12 +53,14 @@ namespace remote_fmt { namespace detail {
 
     template<typename T,
              typename Append>
-    void appendSized(TimeSize timeSize,
-                     T        value,
-                     Append   append) {
-        switch(timeSize) {
-        case TimeSize::_4: append(static_cast<std::int32_t>(value)); break;
-        case TimeSize::_8: append(static_cast<std::int64_t>(value)); break;
+    void appendSized(TimeRepresentation rep,
+                     T                  value,
+                     Append             append) {
+        switch(rep) {
+        case TimeRepresentation::_int32:  append(static_cast<std::int32_t>(value)); break;
+        case TimeRepresentation::_int64:  append(static_cast<std::int64_t>(value)); break;
+        case TimeRepresentation::_float:  append(static_cast<float>(value)); break;
+        case TimeRepresentation::_double: append(static_cast<double>(value)); break;
         }
     }
 
@@ -90,10 +93,20 @@ namespace remote_fmt { namespace detail {
         return 0;
     }
 
-    constexpr std::size_t byteSize(TimeSize timeSize) {
-        switch(timeSize) {
-        case TimeSize::_4: return 4;
-        case TimeSize::_8: return 8;
+    constexpr std::size_t byteSize(NumeratorSize ns) {
+        switch(ns) {
+        case NumeratorSize::_1: return 1;
+        case NumeratorSize::_8: return 8;
+        }
+        return 0;
+    }
+
+    constexpr std::size_t byteSize(TimeRepresentation rep) {
+        switch(rep) {
+        case TimeRepresentation::_int32:  return 4;
+        case TimeRepresentation::_int64:  return 8;
+        case TimeRepresentation::_float:  return 4;
+        case TimeRepresentation::_double: return 8;
         }
         return 0;
     }
@@ -106,10 +119,20 @@ namespace remote_fmt { namespace detail {
         return 0;
     }
 
-    constexpr TypeSize timeSizeToTypeSize(TimeSize timeSize) {
-        switch(timeSize) {
-        case TimeSize::_4: return TypeSize::_4;
-        case TimeSize::_8: return TypeSize::_8;
+    constexpr TypeSize numeratorSizeToTypeSize(NumeratorSize ns) {
+        switch(ns) {
+        case NumeratorSize::_1: return TypeSize::_1;
+        case NumeratorSize::_8: return TypeSize::_8;
+        }
+        return TypeSize::_8;
+    }
+
+    constexpr TypeSize repToTypeSize(TimeRepresentation rep) {
+        switch(rep) {
+        case TimeRepresentation::_int32:  return TypeSize::_4;
+        case TimeRepresentation::_int64:  return TypeSize::_8;
+        case TimeRepresentation::_float:  return TypeSize::_4;   // unreachable from integral path
+        case TimeRepresentation::_double: return TypeSize::_8;   // unreachable from integral path
         }
         return TypeSize::_8;
     }
@@ -131,15 +154,28 @@ namespace remote_fmt { namespace detail {
         return TypeSize::_1;
     }
 
-    template<std::integral T>
-    constexpr TimeSize sizeToTimeSize(T size) {
-        static_assert(std::is_signed_v<T>, "Type must be signed!");
-        if(size > std::numeric_limits<std::int32_t>::max()
-           || size < std::numeric_limits<std::int32_t>::min())
-        {
-            return TimeSize::_8;
+    template<typename T>
+    constexpr TimeRepresentation repForValue(T value) {
+        if constexpr(std::is_same_v<T, float>) {
+            return TimeRepresentation::_float;
+        } else if constexpr(std::is_floating_point_v<T>) {
+            return TimeRepresentation::_double;
+        } else {
+            using SignedT
+              = std::conditional_t<std::is_same_v<std::uint32_t, T>,
+                                   std::int64_t,
+                                   std::conditional_t<std::is_same_v<std::uint16_t, T>
+                                                        || std::is_same_v<std::uint8_t, T>,
+                                                      std::int32_t,
+                                                      std::make_signed_t<T>>>;
+            auto const sv = static_cast<SignedT>(value);
+            if(sv > std::numeric_limits<std::int32_t>::max()
+               || sv < std::numeric_limits<std::int32_t>::min())
+            {
+                return TimeRepresentation::_int64;
+            }
+            return TimeRepresentation::_int32;
         }
-        return TimeSize::_4;
     }
 
     template<std::integral T>
@@ -163,6 +199,10 @@ namespace remote_fmt { namespace detail {
     template<RangeSize rs>
     using rangeSize_unsigned_t
       = std::conditional_t<rs == RangeSize::_1, std::uint8_t, std::uint16_t>;
+
+    template<NumeratorSize ns>
+    using numeratorSize_unsigned_t
+      = std::conditional_t<ns == NumeratorSize::_1, std::uint8_t, std::uint64_t>;
 
     template<typename T>
     constexpr std::byte castAndShift(T           value,
@@ -300,42 +340,49 @@ namespace remote_fmt { namespace detail {
         };
     }
 
-    template<TimeType tt, TypeSize num_ts, TypeSize den_ts>
-    static constexpr std::byte TypeId_v<TypeIdentifier::time, tt, num_ts, den_ts>{
-      castAndShift(TypeIdentifier::time, 0) | castAndShift(num_ts, 2) | castAndShift(den_ts, 4)
+    // New time byte layout:
+    //   Bit 7:   TimeType        (0=duration, 1=time_point)
+    //   Bits 5-6: TimeRepresentation (00=int32, 01=int64, 10=float, 11=double)
+    //   Bits 3-4: den_ts         (TypeSize for ratio denominator)
+    //   Bit 2:   NumeratorSize   (0=_1, 1=_8)
+    //   Bits 0-1: TypeIdentifier::time = 0b10
+    template<TimeType tt, NumeratorSize num_ns, TypeSize den_ts>
+    static constexpr std::byte TypeId_v<TypeIdentifier::time, tt, num_ns, den_ts>{
+      castAndShift(TypeIdentifier::time, 0) | castAndShift(num_ns, 2) | castAndShift(den_ts, 3)
       | castAndShift(tt, 7)};
 
-    template<TimeType timeType,
-             TypeSize num_ts,
-             TypeSize den_ts>
-    constexpr std::byte timeTypeIdentifier(TimeSize timeSize) {
-        return TypeId_v<TypeIdentifier::time, timeType, num_ts, den_ts> | castAndShift(timeSize, 6);
+    template<TimeType      timeType,
+             NumeratorSize num_ns,
+             TypeSize      den_ts>
+    constexpr std::byte timeTypeIdentifier(TimeRepresentation rep) {
+        return TypeId_v<TypeIdentifier::time, timeType, num_ns, den_ts> | castAndShift(rep, 5);
     }
 
     constexpr std::optional<std::tuple<TimeType,
+                                       NumeratorSize,
                                        TypeSize,
-                                       TypeSize,
-                                       TimeSize>>
+                                       TimeRepresentation>>
     parseTimeTypeIdentifier(std::byte value) {
         TypeIdentifier const typeId = parseTypeIdentifier(value);
         if(typeId != TypeIdentifier::time) { return std::nullopt; }
 
-        TypeSize const num_ts   = static_cast<TypeSize>((value & std::byte{0x0C}) >> 2);
-        TypeSize const den_ts   = static_cast<TypeSize>((value & std::byte{0x30}) >> 4);
-        TimeSize const timeSize = static_cast<TimeSize>((value & std::byte{0x40}) >> 6);
+        NumeratorSize const numSize = static_cast<NumeratorSize>((value & std::byte{0x04}) >> 2);
+        TypeSize const      den_ts  = static_cast<TypeSize>((value & std::byte{0x18}) >> 3);
+        TimeRepresentation const timeRep
+          = static_cast<TimeRepresentation>((value & std::byte{0x60}) >> 5);
         TimeType const timeType = static_cast<TimeType>((value & std::byte{0x80}) >> 7);
 
         if(value
            != (detail::castAndShift(static_cast<TypeIdentifier>(typeId), 0)
-               | detail::castAndShift(static_cast<TypeSize>(num_ts), 2)
-               | detail::castAndShift(static_cast<TypeSize>(den_ts), 4)
-               | detail::castAndShift(static_cast<TimeSize>(timeSize), 6)
+               | detail::castAndShift(static_cast<NumeratorSize>(numSize), 2)
+               | detail::castAndShift(static_cast<TypeSize>(den_ts), 3)
+               | detail::castAndShift(static_cast<TimeRepresentation>(timeRep), 5)
                | detail::castAndShift(static_cast<TimeType>(timeType), 7)))
         {
             return std::nullopt;
         }
         return {
-          {timeType, num_ts, den_ts, timeSize}
+          {timeType, numSize, den_ts, timeRep}
         };
     }
 

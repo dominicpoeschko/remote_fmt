@@ -464,11 +464,40 @@ namespace detail {
             return extractAndFormatTrivial(first, last, replacementField, trivialType, typeSize);
         }
 
-        template<typename Ratio>
-        std::optional<std::string> formatTimeFixedRatio(std::int64_t     value,
-                                                        TimeType         timeType,
-                                                        std::string_view replacementField) {
-            using duration = std::chrono::duration<std::int64_t, Ratio>;
+        using std_ratios = std::tuple<std::atto,
+                                      std::femto,
+                                      std::pico,
+                                      std::nano,
+                                      std::micro,
+                                      std::milli,
+                                      std::centi,
+                                      std::ratio<1>,
+                                      std::deci,
+                                      std::deca,
+                                      std::hecto,
+                                      std::kilo,
+                                      std::mega,
+                                      std::giga,
+                                      std::tera,
+                                      std::peta,
+                                      std::exa,
+                                      std::chrono::nanoseconds::period,
+                                      std::chrono::microseconds::period,
+                                      std::chrono::milliseconds::period,
+                                      std::chrono::seconds::period,
+                                      std::chrono::minutes::period,
+                                      std::chrono::hours::period,
+                                      std::chrono::days::period,
+                                      std::chrono::weeks::period,
+                                      std::chrono::months::period,
+                                      std::chrono::years::period>;
+
+        template<typename Rep,
+                 typename Ratio>
+        std::optional<std::string> formatTimeFixedRatioImpl(Rep              value,
+                                                            TimeType         timeType,
+                                                            std::string_view replacementField) {
+            using duration = std::chrono::duration<Rep, Ratio>;
             try {
                 if(timeType == TimeType::duration) {
                     return fmt::format(fmt::runtime(replacementField), duration{value});
@@ -487,45 +516,18 @@ namespace detail {
             return std::nullopt;
         }
 
-        std::optional<std::string> formatTime(std::uint64_t    num,
-                                              std::uint64_t    den,
-                                              std::int64_t     value,
-                                              TimeType         timeType,
-                                              std::string_view replacementField) {
-            using std_ratios = std::tuple<std::atto,
-                                          std::femto,
-                                          std::pico,
-                                          std::nano,
-                                          std::micro,
-                                          std::milli,
-                                          std::centi,
-                                          std::ratio<1>,
-                                          std::deci,
-                                          std::deca,
-                                          std::hecto,
-                                          std::kilo,
-                                          std::mega,
-                                          std::giga,
-                                          std::tera,
-                                          std::peta,
-                                          std::exa,
-                                          std::chrono::nanoseconds::period,
-                                          std::chrono::microseconds::period,
-                                          std::chrono::milliseconds::period,
-                                          std::chrono::seconds::period,
-                                          std::chrono::minutes::period,
-                                          std::chrono::hours::period,
-                                          std::chrono::days::period,
-                                          std::chrono::weeks::period,
-                                          std::chrono::months::period,
-                                          std::chrono::years::period>;
-
+        template<typename Rep>
+        std::optional<std::string> formatTimeImpl(std::uint64_t    num,
+                                                  std::uint64_t    den,
+                                                  Rep              value,
+                                                  TimeType         timeType,
+                                                  std::string_view replacementField) {
             std::optional<std::string> oStr;
             bool                       failed = false;
             auto format_std_ratio = [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
                 using ratio = typename std::tuple_element_t<I, std_ratios>::type;
                 if(ratio::num == num && ratio::den == den) {
-                    oStr = formatTimeFixedRatio<ratio>(value, timeType, replacementField);
+                    oStr = formatTimeFixedRatioImpl<Rep, ratio>(value, timeType, replacementField);
                     if(!oStr) { failed = true; }
                     return false;
                 }
@@ -575,32 +577,46 @@ namespace detail {
             auto const trivialTypeId = parseTimeTypeIdentifier(*first);
             if(!trivialTypeId) { return std::nullopt; }
             ++first;
-            auto const [timeType, numeratorTypeSize, denominatorTypeSize, timeSize]
-              = *trivialTypeId;
+            auto const [timeType, numSize, denominatorTypeSize, timeRep] = *trivialTypeId;
 
             auto const byteCount
-              = byteSize(numeratorTypeSize) + byteSize(denominatorTypeSize) + byteSize(timeSize);
+              = byteSize(numSize) + byteSize(denominatorTypeSize) + byteSize(timeRep);
             if(byteCount > static_cast<std::size_t>(std::distance(first, last))) {
                 return std::nullopt;
             }
 
-            auto const numeratorOpt = extractUnsigned(first, last, numeratorTypeSize);
+            auto const numeratorOpt
+              = extractUnsigned(first, last, numeratorSizeToTypeSize(numSize));
             if(!numeratorOpt) { return std::nullopt; }
             std::uint64_t const numerator = *numeratorOpt;
-            first += static_cast<std::make_signed_t<std::size_t>>(byteSize(numeratorTypeSize));
+            first += static_cast<std::make_signed_t<std::size_t>>(byteSize(numSize));
             auto const denominatorOpt = extractUnsigned(first, last, denominatorTypeSize);
             if(!denominatorOpt) { return std::nullopt; }
             std::uint64_t const denominator = *denominatorOpt;
             first += static_cast<std::make_signed_t<std::size_t>>(byteSize(denominatorTypeSize));
-            auto const valueOpt = extractSigned(first, last, timeSizeToTypeSize(timeSize));
-            if(!valueOpt) { return std::nullopt; }
-            std::int64_t const value = *valueOpt;
-            first += static_cast<std::make_signed_t<std::size_t>>(byteSize(timeSize));
 
             if(denominator == 0 || numerator == 0) { return std::nullopt; }
 
+            if(timeRep == TimeRepresentation::_float || timeRep == TimeRepresentation::_double) {
+                double const fpValue = (timeRep == TimeRepresentation::_float)
+                                       ? static_cast<double>(extract<float>(first, last))
+                                       : extract<double>(first, last);
+                first += static_cast<std::make_signed_t<std::size_t>>(byteSize(timeRep));
+                auto const optStr
+                  = formatTimeImpl(numerator, denominator, fpValue, timeType, replacementField);
+                if(!optStr) { return std::nullopt; }
+                return {
+                  {*optStr, first}
+                };
+            }
+
+            auto const valueOpt = extractSigned(first, last, repToTypeSize(timeRep));
+            if(!valueOpt) { return std::nullopt; }
+            std::int64_t const value = *valueOpt;
+            first += static_cast<std::make_signed_t<std::size_t>>(byteSize(timeRep));
+
             auto const optionalTrivial
-              = formatTime(numerator, denominator, value, timeType, replacementField);
+              = formatTimeImpl(numerator, denominator, value, timeType, replacementField);
             if(!optionalTrivial) { return std::nullopt; }
 
             return {

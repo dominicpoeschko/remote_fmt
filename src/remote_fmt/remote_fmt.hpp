@@ -266,35 +266,29 @@ namespace detail {
                                                      std::ratio<Num,
                                                                 Denom>> const& duration,
                                Append                                          append) {
-        static_assert(std::is_same_v<Rep, std::int64_t>
+        static_assert(std::is_floating_point_v<Rep> || std::is_same_v<Rep, std::int64_t>
                         || (4 >= sizeof(Rep) && std::is_trivial_v<Rep>),
-                      "only with std::int64_t or smaller rep");
-        using SignedRep
-          = std::conditional_t<std::is_same_v<std::uint32_t, Rep>,
-                               std::int64_t,
-                               std::conditional_t<std::is_same_v<std::uint16_t, Rep>
-                                                    || std::is_same_v<std::uint8_t, Rep>,
-                                                  std::int32_t,
-                                                  Rep>>;
+                      "unsupported Rep type for duration formatting");
+
         constexpr auto numerator   = std::ratio<Num, Denom>::num;
         constexpr auto denominator = std::ratio<Num, Denom>::den;
 
         static_assert(numerator > 0, "should not be possible std::chrono::duration checks that");
         static_assert(denominator > 0, "should not be possible std::chrono::duration checks that");
 
-        constexpr auto numerator_size   = sizeToTypeSize(static_cast<std::uint64_t>(numerator));
+        constexpr auto numerator_size = (numerator <= 255) ? NumeratorSize::_1 : NumeratorSize::_8;
         constexpr auto denominator_size = sizeToTypeSize(static_cast<std::uint64_t>(denominator));
 
-        auto const count    = static_cast<SignedRep>(duration.count());
-        auto const timeSize = detail::sizeToTimeSize(count);
+        auto const count   = duration.count();
+        auto const timeRep = detail::repForValue(count);
         auto const typeIdentifier
-          = detail::timeTypeIdentifier<timeType, numerator_size, denominator_size>(timeSize);
+          = detail::timeTypeIdentifier<timeType, numerator_size, denominator_size>(timeRep);
 
         append(typeIdentifier,
-               static_cast<detail::typeSize_unsigned_t<numerator_size>>(numerator),
+               static_cast<detail::numeratorSize_unsigned_t<numerator_size>>(numerator),
                static_cast<detail::typeSize_unsigned_t<denominator_size>>(denominator));
 
-        appendSized(timeSize, count, append);
+        appendSized(timeRep, count, append);
     }
 }   // namespace detail
 
@@ -671,7 +665,7 @@ private:
     template<typename... Ts>
         requires(std::is_trivially_copyable_v<Ts> && ...)
     constexpr void printHelper(Ts const&... values) {
-        (lowprint(std::span<const Ts, 1>{std::addressof(values), 1}), ...);
+        (lowprint(std::span<Ts const, 1>{std::addressof(values), 1}), ...);
     }
 
     template<typename T>
