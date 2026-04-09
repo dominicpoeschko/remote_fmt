@@ -739,17 +739,15 @@ namespace detail {
                                                                               stringConstantsMap,
                                                                               *this));
             ResultType result = std::nullopt;
-            enchantum::for_each<ExtendedTypeIdentifier>([&](auto enumerator) {
-                if(static_cast<ExtendedTypeIdentifier>(enumerator) == enumVal) {
-                    static constexpr ExtendedTypeIdentifier eti = enumerator;
-                    result = ExtendedTypeIdentifierParser<eti>::parse(first,
-                                                                      last,
-                                                                      replacementField,
-                                                                      in_map,
-                                                                      in_list,
-                                                                      stringConstantsMap,
-                                                                      *this);
-                }
+            enchantum_ext::enum_switch(enumVal, [&](auto enumerator) {
+                static constexpr ExtendedTypeIdentifier eti = enumerator;
+                result = ExtendedTypeIdentifierParser<eti>::parse(first,
+                                                                  last,
+                                                                  replacementField,
+                                                                  in_map,
+                                                                  in_list,
+                                                                  stringConstantsMap,
+                                                                  *this);
             });
             return result;
         }

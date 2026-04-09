@@ -47,6 +47,42 @@
         #pragma clang diagnostic pop
     #endif
 
+namespace enchantum_ext {
+namespace detail {
+    template<typename E,
+             std::size_t... Is,
+             typename F>
+    constexpr auto enum_switch_impl(E   value,
+                                    F&& func,
+                                    std::index_sequence<Is...>) {
+        using Ret = std::invoke_result_t<F, std::integral_constant<E, enchantum::values<E>[0]>>;
+
+        if constexpr(std::is_void_v<Ret>) {
+            ((enchantum::values<E>[Is] == value
+                ? (func(std::integral_constant<E, enchantum::values<E>[Is]> {}), true)
+                : false)
+             || ...);
+        } else {
+            Ret result{};
+            ((enchantum::values<E>[Is] == value
+                ? (result = func(std::integral_constant<E, enchantum::values<E>[Is]> {}), true)
+                : false)
+             || ...);
+            return result;
+        }
+    }
+}   // namespace detail
+
+template<typename E,
+         typename F>
+constexpr auto enum_switch(E   value,
+                           F&& func) {
+    return detail::enum_switch_impl(value,
+                                    std::forward<F>(func),
+                                    std::make_index_sequence<enchantum::count<E>>{});
+}
+}   // namespace enchantum_ext
+
 #endif
 
 #if __has_include(<fmt/color.h>)
@@ -409,13 +445,11 @@ struct formatter<T> {
         };
 #if __has_include(<enchantum/enchantum.hpp>)
         if(enchantum::contains(value)) {
-            enchantum::for_each<T>([&](auto enumValue) {
-                if(static_cast<T>(enumValue) == value) {
-                    static constexpr T    enumConstant = enumValue;
-                    static constexpr auto get
-                      = sc::create([]() { return enchantum::to_string(enumConstant); });
-                    formatter<std::remove_cvref_t<decltype(get)>>{}.format(get, printer);
-                }
+            enchantum_ext::enum_switch(value, [&](auto enumValue) {
+                static constexpr T    enumConstant = enumValue;
+                static constexpr auto get
+                  = sc::create([]() { return enchantum::to_string(enumConstant); });
+                formatter<std::remove_cvref_t<decltype(get)>>{}.format(get, printer);
             });
             return;
         } else {
