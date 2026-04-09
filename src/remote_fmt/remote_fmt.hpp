@@ -58,10 +58,10 @@ namespace detail {
         using Ret = std::invoke_result_t<F, std::integral_constant<E, enchantum::values<E>[0]>>;
 
         if constexpr(std::is_void_v<Ret>) {
-            ((enchantum::values<E>[Is] == value
-                ? (func(std::integral_constant<E, enchantum::values<E>[Is]> {}), true)
-                : false)
-             || ...);
+            (void)((enchantum::values<E>[Is] == value
+                      ? (func(std::integral_constant<E, enchantum::values<E>[Is]> {}), true)
+                      : false)
+                   || ...);
         } else {
             Ret result{};
             ((enchantum::values<E>[Is] == value
