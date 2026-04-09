@@ -4,30 +4,27 @@
 #include "remote_fmt/remote_fmt.hpp"
 #include "remote_fmt/type_identifier.hpp"
 
+#include <algorithm>
+#include <cassert>
+#include <cstddef>
+#include <cstring>
 #ifdef __GNUC__
     #pragma GCC diagnostic push
     #pragma GCC diagnostic ignored "-Wextra-semi"
 #endif
-
 #ifdef __clang__
     #pragma clang diagnostic push
     #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
+    #pragma clang diagnostic ignored "-Wnewline-eof"
 #endif
-
-#include <magic_enum/magic_enum.hpp>
-#include <magic_enum/magic_enum_switch.hpp>
-
+#include <enchantum/algorithms.hpp>
+#include <enchantum/enchantum.hpp>
 #ifdef __GNUC__
     #pragma GCC diagnostic pop
 #endif
 #ifdef __clang__
     #pragma clang diagnostic pop
 #endif
-
-#include <algorithm>
-#include <cassert>
-#include <cstddef>
-#include <cstring>
 #include <functional>
 #include <iomanip>
 #include <iterator>
@@ -105,7 +102,7 @@ namespace detail {
 
                     auto const color = opt_result_term->first;
 
-                    if(!magic_enum::enum_contains<fmt::terminal_color>(
+                    if(!enchantum::contains<fmt::terminal_color>(
                          static_cast<std::underlying_type_t<fmt::terminal_color>>(color)))
                     {
                         return false;
@@ -440,7 +437,7 @@ namespace detail {
                         "bad format for replacement field {:?}: {} (type: {}, size: {} bytes)",
                         replacementField,
                         e.what(),
-                        magic_enum::enum_name(trivialType),
+                        enchantum::to_string(trivialType),
                         byteSize(typeSize)));
                       return std::nullopt;
                   }
@@ -508,7 +505,7 @@ namespace detail {
                               "{}/{}, value: {})",
                               replacementField,
                               e.what(),
-                              magic_enum::enum_name(timeType),
+                              enchantum::to_string(timeType),
                               Ratio::num,
                               Ratio::den,
                               value));
@@ -725,24 +722,36 @@ namespace detail {
                                     std::unordered_map<std::uint16_t,
                                                        std::string> const& stringConstantsMap) {
             if(size > std::numeric_limits<std::underlying_type_t<ExtendedTypeIdentifier>>::max()
-               || !magic_enum::enum_contains<ExtendedTypeIdentifier>(
+               || !enchantum::contains<ExtendedTypeIdentifier>(
                  static_cast<std::underlying_type_t<ExtendedTypeIdentifier>>(size)))
             {
                 return std::nullopt;
             }
 
-            return magic_enum::enum_switch(
-              [&](auto enumerator) {
-                  static constexpr ExtendedTypeIdentifier eti = enumerator;
-                  return ExtendedTypeIdentifierParser<eti>::parse(first,
-                                                                  last,
-                                                                  replacementField,
-                                                                  in_map,
-                                                                  in_list,
-                                                                  stringConstantsMap,
-                                                                  *this);
-              },
-              magic_enum::enum_value<ExtendedTypeIdentifier>(size));
+            auto const enumVal = *enchantum::index_to_enum<ExtendedTypeIdentifier>(size);
+            using ResultType
+              = decltype(ExtendedTypeIdentifierParser<
+                         enchantum::values<ExtendedTypeIdentifier>[0]>::parse(first,
+                                                                              last,
+                                                                              replacementField,
+                                                                              in_map,
+                                                                              in_list,
+                                                                              stringConstantsMap,
+                                                                              *this));
+            ResultType result = std::nullopt;
+            enchantum::for_each<ExtendedTypeIdentifier>([&](auto enumerator) {
+                if(static_cast<ExtendedTypeIdentifier>(enumerator) == enumVal) {
+                    static constexpr ExtendedTypeIdentifier eti = enumerator;
+                    result = ExtendedTypeIdentifierParser<eti>::parse(first,
+                                                                      last,
+                                                                      replacementField,
+                                                                      in_map,
+                                                                      in_list,
+                                                                      stringConstantsMap,
+                                                                      *this);
+                }
+            });
+            return result;
         }
 
         struct RangeReplacementField {

@@ -24,7 +24,7 @@
 #include <utility>
 #include <variant>
 
-#if __has_include(<magic_enum/magic_enum.hpp>)
+#if __has_include(<enchantum/enchantum.hpp>)
 
     #ifdef __GNUC__
         #pragma GCC diagnostic push
@@ -33,11 +33,12 @@
 
     #ifdef __clang__
         #pragma clang diagnostic push
-        #pragma clang diagnostic ignored "-Wextra-semi-stmt"
         #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
+        #pragma clang diagnostic ignored "-Wnewline-eof"
     #endif
-    #include <magic_enum/magic_enum.hpp>
-    #include <magic_enum/magic_enum_switch.hpp>
+
+    #include <enchantum/algorithms.hpp>
+    #include <enchantum/enchantum.hpp>
 
     #ifdef __GNUC__
         #pragma GCC diagnostic pop
@@ -406,16 +407,17 @@ struct formatter<T> {
 
             return formatter<format_t>{}.format(static_cast<format_t>(value), printer);
         };
-#if __has_include(<magic_enum/magic_enum.hpp>)
-        if(magic_enum::enum_contains(value)) {
-            return magic_enum::enum_switch(
-              [&](auto enumValue) {
-                  static constexpr T    enumConstant = enumValue;
-                  static constexpr auto get
-                    = sc::create([]() { return magic_enum::enum_name<enumConstant>(); });
-                  return formatter<std::remove_cvref_t<decltype(get)>>{}.format(get, printer);
-              },
-              value);
+#if __has_include(<enchantum/enchantum.hpp>)
+        if(enchantum::contains(value)) {
+            enchantum::for_each<T>([&](auto enumValue) {
+                if(static_cast<T>(enumValue) == value) {
+                    static constexpr T    enumConstant = enumValue;
+                    static constexpr auto get
+                      = sc::create([]() { return enchantum::to_string(enumConstant); });
+                    formatter<std::remove_cvref_t<decltype(get)>>{}.format(get, printer);
+                }
+            });
+            return;
         } else {
             return as_int();
         }

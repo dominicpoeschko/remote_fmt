@@ -41,13 +41,13 @@ if(NOT CMAKE_CROSSCOMPILING)
         master)
 
     find_or_fetch_package(
-        magic_enum
+        enchantum
         GIT_REPOSITORY
-        https://github.com/Neargye/magic_enum
+        https://github.com/ZXShady/enchantum
         GIT_TAG
-        v0.9.7
+        0.4.0
         GIT_BRANCH
-        master)
+        main)
 else()
     option(FMT_INSTALL "" OFF)
     mark_as_advanced(FORCE FMT_INSTALL)
@@ -69,17 +69,16 @@ else()
 
     target_compile_options(remote_fmt INTERFACE "-DFMT_ASSERT(condition, message)=assert(condition)")
 
-    populate_package(
-        magic_enum_uc
-        QUIET
+    find_or_fetch_package(
+        enchantum
         GIT_REPOSITORY
-        https://github.com/Neargye/magic_enum
+        https://github.com/ZXShady/enchantum
         GIT_TAG
-        v0.9.7
+        0.4.0
         GIT_BRANCH
-        master)
+        main)
 
-    target_include_directories(remote_fmt INTERFACE ${magic_enum_uc_SOURCE_DIR}/include)
+    target_include_directories(remote_fmt INTERFACE ${enchantum_SOURCE_DIR}/enchantum/include)
 
 endif()
 
@@ -94,7 +93,7 @@ if(NOT CMAKE_CROSSCOMPILING)
     add_library(remote_fmt_parser INTERFACE)
 
     target_include_directories(remote_fmt_parser INTERFACE src)
-    target_link_libraries(remote_fmt_parser INTERFACE fmt::fmt magic_enum::magic_enum nlohmann_json::nlohmann_json)
+    target_link_libraries(remote_fmt_parser INTERFACE fmt::fmt enchantum::enchantum nlohmann_json::nlohmann_json)
 
     add_library(remote_fmt::parser ALIAS remote_fmt_parser)
 endif()
