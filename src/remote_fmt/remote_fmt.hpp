@@ -634,7 +634,7 @@ struct formatter<fmt::detail::styled_arg<T>> {
 
         std::uint8_t flags{};
         if(style.has_foreground()) {
-            if(style.get_foreground().is_rgb) {
+            if(!style.get_foreground().is_terminal_color()) {
                 flags |= 1U;
             } else {
                 flags |= 2U;
@@ -642,7 +642,7 @@ struct formatter<fmt::detail::styled_arg<T>> {
         }
 
         if(style.has_background()) {
-            if(style.get_background().is_rgb) {
+            if(!style.get_background().is_terminal_color()) {
                 flags |= 4U;
             } else {
                 flags |= 8U;
@@ -653,10 +653,10 @@ struct formatter<fmt::detail::styled_arg<T>> {
         printer.printHelper(flags);
 
         auto addColor = [&](auto color) {
-            if(color.is_rgb) {
-                printer.printHelper(static_cast<std::uint32_t>(color.value.rgb_color));
+            if(!color.is_terminal_color()) {
+                printer.printHelper(static_cast<std::uint32_t>(color.value()));
             } else {
-                printer.printHelper(static_cast<std::uint8_t>(color.value.term_color));
+                printer.printHelper(static_cast<std::uint8_t>(color.value()));
             }
         };
 
