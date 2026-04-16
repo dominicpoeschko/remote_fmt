@@ -683,8 +683,9 @@ static constexpr auto format_to(Printer&                     printer,
 
 template<typename ComBackend>
 struct Printer {
-private:
-    void constexpr lowprint(std::span<std::byte const> span) {
+private:    
+    template<std::size_t Extent = std::dynamic_extent>
+    void constexpr lowprint(std::span<std::byte const, Extent> span) {
         if constexpr(requires { ComBackend::write(span); }) {
             ComBackend::write(span);
         } else {
@@ -698,10 +699,21 @@ private:
         lowprint(std::as_bytes(std::span{range}));
     }
 
-    template<typename... Ts>
-        requires(std::is_trivially_copyable_v<Ts> && ...)
-    constexpr void printHelper(Ts const&... values) {
-        (lowprint(std::span{std::addressof(values), 1}), ...);
+    constexpr void printHelper(auto&&... values)
+        requires (sizeof...(values) > 1 && (... && std::is_trivially_copyable_v<std::remove_cvref_t<decltype(values)>>))
+    {
+        (printHelper(std::forward<decltype(values)>(values)), ...);
+    }
+
+    constexpr void printHelper(bool value) {
+        std::byte const data{value};
+        lowprint(std::span<std::byte const, 1>{&data, std::size_t{1}});
+    }
+
+    template <typename Type>
+        requires(std::is_trivially_copyable_v<Type> && !std::is_same_v<Type, bool>)
+    constexpr void printHelper(Type const& value) {
+        lowprint(std::span<Type const, 1>{std::addressof(value), 1});
     }
 
     template<typename T>
