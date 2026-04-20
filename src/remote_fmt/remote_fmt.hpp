@@ -304,7 +304,7 @@ namespace detail {
                                                                 Denom>> const& duration,
                                Append                                          append) {
         static_assert(std::is_floating_point_v<Rep> || std::is_same_v<Rep, std::int64_t>
-                        || (4 >= sizeof(Rep) && std::is_trivial_v<Rep>),
+                        || (4 >= sizeof(Rep) && std::is_trivially_copyable_v<Rep> && std::is_trivially_default_constructible_v<Rep>),
                       "unsupported Rep type for duration formatting");
 
         constexpr auto numerator   = std::ratio<Num, Denom>::num;
