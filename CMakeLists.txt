@@ -27,7 +27,7 @@ if(NOT CMAKE_CROSSCOMPILING)
         GIT_REPOSITORY
         https://github.com/fmtlib/fmt.git
         GIT_TAG
-        12.1.0
+        12.2.0
         GIT_BRANCH
         master)
 
@@ -58,7 +58,7 @@ else()
         GIT_REPOSITORY
         https://github.com/fmtlib/fmt.git
         GIT_TAG
-        12.1.0
+        12.2.0
         GIT_BRANCH
         master
         PATCH_FILE
