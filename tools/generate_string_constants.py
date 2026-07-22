@@ -47,7 +47,7 @@ def parse_StringConstant(s):
     """Parse a StringConstant template parameter into a readable string."""
     s = s.removeprefix("sc::StringConstant<")
     s = s.partition(">")[0]
-    l = ""
+    literal = ""
 
     while s:
         s = s.removeprefix("(char)")
@@ -55,13 +55,13 @@ def parse_StringConstant(s):
         s = s.removeprefix(part)
         s = s.removeprefix(", ")
         try:
-            l += chr(int(part))
+            literal += chr(int(part))
         except (ValueError, OverflowError) as e:
             print(
                 f"Error parsing character code '{part}': {e}", file=sys.stderr)
             return None
 
-    return l
+    return literal
 
 
 def parse_symbol(symbol):
@@ -101,9 +101,9 @@ for f in args.objects:
     except FileNotFoundError:
         print("Error: nm command not found.", file=sys.stderr)
         sys.exit(1)
-    for l in iter(x.stdout.splitlines()):
-        if l.strip().startswith("U unsigned short remote_fmt::catalog<sc::StringConstant<"):
-            symbols.append(l.strip().removeprefix("U "))
+    for line in iter(x.stdout.splitlines()):
+        if line.strip().startswith("U unsigned short remote_fmt::catalog<sc::StringConstant<"):
+            symbols.append(line.strip().removeprefix("U "))
 
 symbols = list(set(symbols))
 symbols.sort()

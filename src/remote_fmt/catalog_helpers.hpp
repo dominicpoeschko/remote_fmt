@@ -1,6 +1,10 @@
 #pragma once
 #include "remote_fmt/fmt_wrapper.hpp"
 
+#ifdef __GNUC__
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
 #ifdef __clang__
     #pragma clang diagnostic push
     #pragma clang diagnostic ignored "-Wsign-conversion"
@@ -9,10 +13,14 @@
     #pragma clang diagnostic ignored "-Wimplicit-int-conversion"
     #pragma clang diagnostic ignored "-Wunsafe-buffer-usage-in-libc-call"
     #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
+    #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #endif
 
 #include <nlohmann/json.hpp>
 
+#ifdef __GNUC__
+    #pragma GCC diagnostic pop
+#endif
 #ifdef __clang__
     #pragma clang diagnostic pop
 #endif

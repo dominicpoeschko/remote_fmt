@@ -29,12 +29,14 @@
     #ifdef __GNUC__
         #pragma GCC diagnostic push
         #pragma GCC diagnostic ignored "-Wextra-semi"
+        #pragma GCC diagnostic ignored "-Wsign-conversion"
     #endif
 
     #ifdef __clang__
         #pragma clang diagnostic push
         #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
         #pragma clang diagnostic ignored "-Wnewline-eof"
+        #pragma clang diagnostic ignored "-Wsign-conversion"
     #endif
 
     #include <enchantum/algorithms.hpp>
