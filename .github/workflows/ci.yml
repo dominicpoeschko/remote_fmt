@@ -1,0 +1,99 @@
+name: CI
+
+on:
+    workflow_dispatch:
+    push:
+        branches:
+            - master
+    pull_request:
+        branches:
+            - master
+
+jobs:
+    build-and-test:
+        runs-on: ubuntu-latest
+        container:
+            image: archlinux:latest
+        strategy:
+            fail-fast: false
+            matrix:
+                compiler:
+                    - {cc: gcc, cxx: g++}
+                    - {cc: gcc, cxx: g++, stdlib_debug: true, sanitizer: address}
+                    - {cc: clang, cxx: clang++}
+                    - {cc: clang, cxx: clang++, stdlib: libc++, stdlib_debug: true, sanitizer: address}
+
+        steps:
+            - name: Set up C++ environment
+              run: |
+                pacman -Syu --noconfirm --disable-download-timeout
+                pacman -S --noconfirm --disable-download-timeout git cmake base-devel ${{ matrix.compiler.cc == 'clang' && 'clang' || '' }} ${{ matrix.compiler.stdlib == 'libc++' && 'libc++ lld' || '' }}
+
+            - name: Checkout repository
+              uses: actions/checkout@v5
+              with:
+                submodules: recursive
+
+            - name: Configure CMake
+              run: >
+                cmake -S tests -B build
+                -DUSE_FORCE_FETCH=ON
+                ${{ matrix.compiler.sanitizer && format('-DUSE_SANITIZER={0}', matrix.compiler.sanitizer) || '' }}
+                ${{ matrix.compiler.stdlib && format('-DUSE_STD_LIB={0}', matrix.compiler.stdlib) || '' }}
+                ${{ matrix.compiler.stdlib_debug && '-DUSE_STDLIB_DEBUG=true' || '' }}
+              env:
+                CC: ${{ matrix.compiler.cc }}
+                CXX: ${{ matrix.compiler.cxx }}
+
+            - name: Build project
+              run: cmake --build build -j"$(nproc)"
+
+            - name: Run tests
+              run: cd build && ctest --output-on-failure
+
+    # Dedicated longer libFuzzer run on the parser. Uses clang; the fuzz target builds for
+    # gcc automatically once gcc supports -fsanitize=fuzzer.
+    fuzz:
+        runs-on: ubuntu-latest
+        container:
+            image: archlinux:latest
+
+        steps:
+            - name: Set up C++ environment
+              run: |
+                pacman -Syu --noconfirm --disable-download-timeout
+                pacman -S --noconfirm --disable-download-timeout git cmake base-devel clang
+
+            - name: Checkout repository
+              uses: actions/checkout@v5
+              with:
+                submodules: recursive
+
+            - name: Configure CMake
+              run: cmake -S tests -B build -DUSE_FORCE_FETCH=ON
+              env:
+                CC: clang
+                CXX: clang++
+
+            - name: Build fuzz target
+              run: cmake --build build -j"$(nproc)" --target fuzz_parser fuzz_corpus_generator
+
+            - name: Generate seed corpus
+              run: ./build/fuzz_corpus_generator build/corpus
+
+            - name: Run fuzzer
+              run: ./build/fuzz_parser -max_total_time=300 -print_final_stats=1 build/corpus tests/corpus_regressions
+
+            # JS actions cannot run in the bare archlinux container under act (no node),
+            # so skip the upload there - crash files still land in the act workdir.
+            - name: Upload crash artifacts
+              if: failure() && !env.ACT
+              uses: actions/upload-artifact@v4
+              with:
+                name: fuzz-crashes
+                path: |
+                  crash-*
+                  leak-*
+                  timeout-*
+                  oom-*
+                if-no-files-found: ignore

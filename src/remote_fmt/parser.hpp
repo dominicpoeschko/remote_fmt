@@ -515,12 +515,40 @@ namespace detail {
             return std::nullopt;
         }
 
+        // fmt's chrono decomposition (%j, %H, ...) static_casts the day count from
+        // floating point to int before range checking it - UB for huge values (fmt
+        // 12.2.0, chrono.h to_nonnegative_int, found by fuzzing). Reject values whose
+        // day count cannot fit an int before handing them to fmt. %Q/%q and specs
+        // without conversion specifiers only print the count and are always safe.
+        template<typename Rep>
+        bool timeValueSafeForFmt(std::uint64_t    num,
+                                 std::uint64_t    den,
+                                 Rep              value,
+                                 std::string_view replacementField) {
+            if(!replacementField.contains('%') || replacementField == "{:%Q}"
+               || replacementField == "{:%q}" || replacementField == "{:%Q%q}")
+            {
+                return true;
+            }
+            static constexpr double maxSeconds
+              = 86400.0 * static_cast<double>(std::numeric_limits<std::int32_t>::max());
+            double const seconds
+              = (static_cast<double>(value) * static_cast<double>(num)) / static_cast<double>(den);
+            if(seconds >= -maxSeconds && seconds <= maxSeconds) { return true; }
+            errorMessagef(
+              fmt::format("time value out of range (ratio: {}/{}, value: {})", num, den, value));
+            return false;
+        }
+
         template<typename Rep>
         std::optional<std::string> formatTimeImpl(std::uint64_t    num,
                                                   std::uint64_t    den,
                                                   Rep              value,
                                                   TimeType         timeType,
                                                   std::string_view replacementField) {
+            if constexpr(std::is_floating_point_v<Rep>) {
+                if(!timeValueSafeForFmt(num, den, value, replacementField)) { return std::nullopt; }
+            }
             std::optional<std::string> oStr;
             bool                       failed = false;
             auto format_std_ratio = [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
@@ -549,6 +577,10 @@ namespace detail {
                 if(den == 1) { return fmt::format("[{}]s", num); }
                 return fmt::format("[{}/{}]s", num, den);
             }
+
+            // Integer reps are converted to a double duration here, so they need the
+            // same guard as floating point values.
+            if(!timeValueSafeForFmt(num, den, value, replacementField)) { return std::nullopt; }
 
             //TODO not correct but otherwise the replacementField needs to be parsed further...
             try {

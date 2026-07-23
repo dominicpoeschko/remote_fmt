@@ -305,7 +305,9 @@ namespace detail {
                                                      std::ratio<Num,
                                                                 Denom>> const& duration,
                                Append                                          append) {
-        static_assert(std::is_floating_point_v<Rep> || std::is_same_v<Rep, std::int64_t>
+        // 8-byte reps are matched by size, not by std::int64_t: libc++ uses long long for
+        // the chrono duration reps while std::int64_t is long on LP64 systems.
+        static_assert(std::is_floating_point_v<Rep> || (std::is_integral_v<Rep> && 8 >= sizeof(Rep))
                         || (4 >= sizeof(Rep) && std::is_trivially_copyable_v<Rep>
                             && std::is_trivially_default_constructible_v<Rep>),
                       "unsupported Rep type for duration formatting");
@@ -421,8 +423,10 @@ struct formatter<sc::StringConstant<chars...>> {
     }
 };
 
+// Formatters are looked up via remove_cvref_t, which also strips the element const from a
+// string literal's array type - so char[N] is the type that arrives here.
 template<std::size_t N>
-struct formatter<char const (&)[N]> {
+struct formatter<char[N]> {
     template<typename Printer>
     constexpr auto format(char const (&value)[N],
                           Printer& printer) const {
