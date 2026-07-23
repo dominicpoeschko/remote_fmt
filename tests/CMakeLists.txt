@@ -14,6 +14,14 @@ include(${cmake_helpers_SOURCE_DIR}/BuildOptions.cmake)
 
 add_subdirectory(../ ${CMAKE_CURRENT_BINARY_DIR}/remote_fmt)
 
+# fmt uses well-defined unsigned wraparound on purpose; keep clang's non-UB "integer" group checks out of fmt sources
+# (see fmt_sanitizer_ignorelist.txt). Harmless when the checks are not enabled.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    set(fmt_sanitizer_ignorelist -fsanitize-ignorelist=${CMAKE_CURRENT_SOURCE_DIR}/fmt_sanitizer_ignorelist.txt)
+else()
+    set(fmt_sanitizer_ignorelist)
+endif()
+
 # Propagate stdlib/sanitizer flags into fetched dependencies so libc++/debug-ABI builds link.
 foreach(dep_target fmt)
     if(TARGET ${dep_target})
@@ -23,6 +31,7 @@ foreach(dep_target fmt)
             target_add_stdlib_debug_flags(${dep_target})
             target_add_sanitizer_flags(${dep_target} PUBLIC)
             target_add_optimizer_flags(${dep_target} PUBLIC)
+            target_compile_options(${dep_target} PRIVATE ${fmt_sanitizer_ignorelist})
         endif()
     endif()
 endforeach()
@@ -33,6 +42,7 @@ function(remote_fmt_add_test name)
     add_executable(${name} ${ARGN})
     target_link_libraries(${name} PRIVATE remote_fmt::remote_fmt remote_fmt::parser)
     target_add_default_build_options(${name} PRIVATE)
+    target_compile_options(${name} PRIVATE ${fmt_sanitizer_ignorelist})
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
@@ -55,6 +65,7 @@ if(REMOTE_FMT_HAS_LIBFUZZER AND NOT "${USE_SANITIZER}" STREQUAL "thread")
     add_executable(fuzz_parser fuzz_parser.cpp)
     target_link_libraries(fuzz_parser PRIVATE remote_fmt::remote_fmt remote_fmt::parser)
     target_add_default_build_options(fuzz_parser PRIVATE)
+    target_compile_options(fuzz_parser PRIVATE ${fmt_sanitizer_ignorelist})
     # -fno-sanitize-recover: UBSan reports are print-and-continue by default, which lets the fuzzer (and CI) sail past
     # findings - make them fatal so an artifact is written.
     target_compile_options(fuzz_parser PRIVATE -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all)
@@ -64,6 +75,7 @@ if(REMOTE_FMT_HAS_LIBFUZZER AND NOT "${USE_SANITIZER}" STREQUAL "thread")
     target_compile_definitions(fuzz_corpus_generator PRIVATE REMOTE_FMT_USE_CATALOG=false)
     target_link_libraries(fuzz_corpus_generator PRIVATE remote_fmt::remote_fmt remote_fmt::parser)
     target_add_default_build_options(fuzz_corpus_generator PRIVATE)
+    target_compile_options(fuzz_corpus_generator PRIVATE ${fmt_sanitizer_ignorelist})
 
     add_test(NAME fuzz_corpus_generate COMMAND fuzz_corpus_generator ${CMAKE_CURRENT_BINARY_DIR}/corpus)
     set_tests_properties(fuzz_corpus_generate PROPERTIES FIXTURES_SETUP fuzz_corpus)

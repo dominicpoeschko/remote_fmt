@@ -1,0 +1,9 @@
+# fmt's float formatting (Dragonbox in format.h, bigint in format-inl.h) relies on
+# well-defined unsigned wraparound arithmetic. Clang's "integer" sanitizer group flags
+# such arithmetic even though it is not UB, so exempt fmt's sources from exactly those
+# checks. Real UB checks (float-cast-overflow, ...) stay active inside fmt.
+# The pattern does not match remote_fmt sources - those contain "_fmt/", not "/fmt/".
+[unsigned-integer-overflow]
+src:*/fmt/*
+[unsigned-shift-base]
+src:*/fmt/*
