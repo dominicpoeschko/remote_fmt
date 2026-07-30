@@ -28,7 +28,6 @@
     #pragma clang diagnostic pop
 #endif
 #include <functional>
-#include <iomanip>
 #include <iterator>
 #include <map>
 #include <optional>
@@ -155,11 +154,11 @@ namespace detail {
         template<typename Iterator,
                  typename Parser>
         static ParseResult<Iterator>
-        parse(Iterator                               first,
-              Iterator                               last,
-              std::string_view                       replacementField,
-              bool                                   in_map,
-              bool                                   in_list,
+        parse(Iterator         first,
+              Iterator         last,
+              std::string_view replacementField,
+              bool             in_map,
+              bool /*in_list*/,
               std::unordered_map<std::uint16_t,
                                  std::string> const& stringConstantsMap,
               Parser&                                parser) {
@@ -169,16 +168,45 @@ namespace detail {
 
             if(isSet != 0 && isSet != 1) { return std::nullopt; }
 
-            if(isSet == 0) { return ParseResult_<Iterator>{"()", first}; }
+            if(isSet == 0) { return ParseResult_<Iterator>{"none", first}; }
+            // in_list is forced true rather than forwarded: a wrapper payload is a nested position,
+            // so fmt keeps applying its debug format inside optional(...) - optional("s") and
+            // optional('c'), not optional(s) and optional(c).
             auto const inner_result = parser.parseFromTypeId(first,
                                                              last,
                                                              replacementField,
-                                                             in_list,
+                                                             true,
                                                              in_map,
                                                              stringConstantsMap);
 
             if(!inner_result) { return std::nullopt; }
-            return ParseResult_<Iterator>{inner_result->str, inner_result->pos};
+            return ParseResult_<Iterator>{fmt::format("optional({})", inner_result->str),
+                                          inner_result->pos};
+        }
+    };
+
+    template<>
+    struct ExtendedTypeIdentifierParser<ExtendedTypeIdentifier::variant> {
+        template<typename Iterator,
+                 typename Parser>
+        static ParseResult<Iterator>
+        parse(Iterator         first,
+              Iterator         last,
+              std::string_view replacementField,
+              bool             in_map,
+              bool /*in_list*/,
+              std::unordered_map<std::uint16_t,
+                                 std::string> const& stringConstantsMap,
+              Parser&                                parser) {
+            auto const inner_result = parser.parseFromTypeId(first,
+                                                             last,
+                                                             replacementField,
+                                                             true,
+                                                             in_map,
+                                                             stringConstantsMap);
+            if(!inner_result) { return std::nullopt; }
+            return ParseResult_<Iterator>{fmt::format("variant({})", inner_result->str),
+                                          inner_result->pos};
         }
     };
 
@@ -187,11 +215,11 @@ namespace detail {
         template<typename Iterator,
                  typename Parser>
         static ParseResult<Iterator>
-        parse(Iterator                               first,
-              Iterator                               last,
-              std::string_view                       replacementField,
-              bool                                   in_map,
-              bool                                   in_list,
+        parse(Iterator         first,
+              Iterator         last,
+              std::string_view replacementField,
+              bool             in_map,
+              bool /*in_list*/,
               std::unordered_map<std::uint16_t,
                                  std::string> const& stringConstantsMap,
               Parser&                                parser) {
@@ -201,15 +229,18 @@ namespace detail {
 
             if(hasValue != 0 && hasValue != 1) { return std::nullopt; }
 
+            // in_list forced true for the same reason as optional: fmt writes expected("ok") and
+            // unexpected("err"), keeping the debug format inside the wrapper.
             auto const inner_result = parser.parseFromTypeId(first,
                                                              last,
                                                              replacementField,
-                                                             in_list,
+                                                             true,
                                                              in_map,
                                                              stringConstantsMap);
             if(!inner_result) { return std::nullopt; }
 
             if(hasValue == 1) {
+                // A void value parses to the empty string, so this yields fmt's "expected()".
                 return ParseResult_<Iterator>{fmt::format("expected({})", inner_result->str),
                                               inner_result->pos};
             }
@@ -231,7 +262,9 @@ namespace detail {
               std::unordered_map<std::uint16_t,
                                  std::string> const& /*stringConstantsMap*/,
               Parser& /*parser*/) {
-            return ParseResult_<Iterator>{"void", first};
+            // Empty rather than "void": this identifier only ever appears as the value of an
+            // expected, and fmt prints that as "expected()".
+            return ParseResult_<Iterator>{"", first};
         }
     };
 
@@ -426,13 +459,22 @@ namespace detail {
                                                       Iterator         last,
                                                       std::string_view replacementField,
                                                       TrivialType      trivialType,
-                                                      TypeSize         typeSize) {
+                                                      TypeSize         typeSize,
+                                                      bool             in_list) {
             auto const optionalTrivial = extractTrivial(first, last, trivialType, typeSize);
             if(!optionalTrivial) { return std::nullopt; }
             first                  = optionalTrivial->second;
             auto const optionalStr = std::visit(
               [&](auto const& value) -> std::optional<std::string> {
                   try {
+                      // A char nested in a range or tuple gets fmt's debug format ('x', with
+                      // control bytes escaped), matching what fmt does for the same container.
+                      // Only chars: fmt leaves the other trivial types alone inside containers.
+                      if constexpr(std::is_same_v<std::remove_cvref_t<decltype(value)>, char>) {
+                          if(in_list && replacementField == Default_replacement_field) {
+                              return fmt::format("{:?}", value);
+                          }
+                      }
                       return fmt::format(fmt::runtime(replacementField), value);
                   } catch(std::exception const& e) {
                       errorMessagef(fmt::format(
@@ -454,13 +496,19 @@ namespace detail {
         template<typename Iterator>
         ParseResult<Iterator> parseTrivial(Iterator         first,
                                            Iterator         last,
-                                           std::string_view replacementField) {
+                                           std::string_view replacementField,
+                                           bool             in_list) {
             if(first == last) { return std::nullopt; }
             auto const trivialTypeId = parseTrivialTypeIdentifier(*first);
             if(!trivialTypeId) { return std::nullopt; }
             ++first;
             auto const [trivialType, typeSize] = *trivialTypeId;
-            return extractAndFormatTrivial(first, last, replacementField, trivialType, typeSize);
+            return extractAndFormatTrivial(first,
+                                           last,
+                                           replacementField,
+                                           trivialType,
+                                           typeSize,
+                                           in_list);
         }
 
         using std_ratios = std::tuple<std::atto,
@@ -677,10 +725,8 @@ namespace detail {
 
             try {
                 auto const ret = [&]() {
-                    if(in_list) {
-                        return fmt::format(
-                          fmt::runtime(replacementField),
-                          (std::stringstream{} << std::quoted(catalogedString)).str());
+                    if(in_list && replacementField == Default_replacement_field) {
+                        return fmt::format("{:?}", catalogedString);
                     }
                     return fmt::format(fmt::runtime(replacementField), catalogedString);
                 }();
@@ -720,10 +766,8 @@ namespace detail {
 
             try {
                 auto const ret = [&]() {
-                    if(in_list) {
-                        return fmt::format(
-                          fmt::runtime(replacementField),
-                          (std::stringstream{} << std::quoted(parsedString)).str());
+                    if(in_list && replacementField == Default_replacement_field) {
+                        return fmt::format("{:?}", parsedString);
                     }
                     return fmt::format(fmt::runtime(replacementField), parsedString);
                 }();
@@ -906,11 +950,15 @@ namespace detail {
                 auto const optionalStr = [&]() {
                     if(rangeLayout == RangeLayout::compact) {
                         auto [trivialType, typeSize] = *trivialTypeId;
+                        // in_list is true here for the same reason the non-compact branch below
+                        // passes it: these are elements of a range. It is what makes a char
+                        // element print as 'x' rather than bare.
                         return extractAndFormatTrivial(first,
                                                        last,
                                                        childReplacementField,
                                                        trivialType,
-                                                       typeSize);
+                                                       typeSize,
+                                                       true);
                     }
                     return parseFromTypeId(first,
                                            last,
@@ -1016,8 +1064,9 @@ namespace detail {
             auto const typeId = parseTypeIdentifier(*first);
             switch(typeId) {
             case TypeIdentifier::fmt_string: return std::nullopt;
-            case TypeIdentifier::trivial:    return parseTrivial(first, last, replacementField);
-            case TypeIdentifier::time:       return parseTime(first, last, replacementField);
+            case TypeIdentifier::trivial:
+                return parseTrivial(first, last, replacementField, in_list);
+            case TypeIdentifier::time: return parseTime(first, last, replacementField);
             case TypeIdentifier::range:
                 return parseRange(first,
                                   last,
@@ -1105,6 +1154,15 @@ namespace detail {
                 auto const optionalReplacementField
                   = getNextReplacementFieldFromFmtStringAndAppendStrings(ret, fmtString);
                 if(!optionalReplacementField) { break; }
+                if(!replacementFieldWithinLimits(*optionalReplacementField)) {
+                    errorMessagef(
+                      fmt::format("replacement field {:?} is a dynamic spec or carries a number "
+                                  "above the limit "
+                                  "of {}",
+                                  *optionalReplacementField,
+                                  Max_replacement_field_number));
+                    return std::nullopt;
+                }
                 auto const optionalStr = parseFromTypeId(iterator,
                                                          last,
                                                          *optionalReplacementField,

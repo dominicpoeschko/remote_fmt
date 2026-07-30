@@ -36,7 +36,19 @@ namespace remote_fmt { namespace detail {
     enum class RangeSize : std::uint8_t { _1, _2 };
     enum class NumeratorSize : std::uint8_t { _1, _8 };
     enum class TimeRepresentation : std::uint8_t { _int32, _int64, _float, _double };
-    enum class ExtendedTypeIdentifier : std::uint8_t { styled, optional, expected, void_type };
+    // Appended rather than inserted: the index is the wire value, so keeping the existing four in
+    // place means only variants change encoding. std::variant used to be serialized transparently -
+    // std::visit handed the active alternative straight to its own formatter and nothing marked it -
+    // which meant the parser could not tell a variant from a bare value and could not reproduce
+    // fmt's variant(...) wrapper. Marking it costs two bytes per variant and is the only way to
+    // match fmt here.
+    enum class ExtendedTypeIdentifier : std::uint8_t {
+        styled,
+        optional,
+        expected,
+        void_type,
+        variant
+    };
 
     template<typename T,
              typename Append>

@@ -179,6 +179,61 @@ namespace detail {
         return std::ranges::all_of(stringView, isValidChar);
     }
 
+    // A replacement field carrying no format spec at all. fmt applies its debug format to strings
+    // and chars nested inside a range or tuple only while the spec is absent - an explicit spec
+    // replaces it - so the parser has to distinguish this exact field from every other one.
+    static constexpr std::string_view Default_replacement_field{"{}"};
+
+    // Upper bound on any number inside a replacement field. fmt allocates width and precision
+    // padding eagerly, so without a bound a 27-byte wire message carrying "{:2147483647}" makes
+    // the host allocate 2 GiB in a single malloc - an amplification of roughly 80,000,000x from
+    // data a device controls.
+    //
+    // 4096 is far above anything a log line legitimately needs and still leaves room for the
+    // largest useful precision: the exact decimal expansion of a double runs to ~767 significant
+    // digits, so "{:.1100f}" style specs keep working.
+    //
+    // Only the parse side enforces this. A device's own format strings are compiled in and
+    // trusted; the untrusted input is the byte stream arriving at the host.
+    static constexpr std::size_t Max_replacement_field_number{4096};
+
+    // Checked per replacement field rather than over the whole format string: literal text
+    // legitimately contains large numbers ("reboot count 1000000"), only the spec must be bounded.
+    constexpr bool replacementFieldWithinLimits(std::string_view replacementField) {
+        // A nested brace means a dynamic width or precision - "{:{}}", or "{0:{0}}" - where the
+        // number comes from an argument at run time instead of from the field text, so the digit
+        // scan below cannot see it and the bound would be silently bypassed. "{0:{0}}" is the
+        // dangerous one: it reuses the argument as its own width, so a single 8-byte integer off the
+        // wire asks fmt for a multi-gigabyte allocation (found by fuzzing).
+        //
+        // Nothing legitimate is lost. The protocol pairs exactly one argument with each replacement
+        // field and has no way to send a second one for a width, so a dynamic spec can only arrive
+        // from a malformed or hostile stream. Range element specs use colons, not braces, so
+        // "{::>5}" and "{:::>4}" are unaffected.
+        if(replacementField.size() > 2
+           && replacementField.substr(1, replacementField.size() - 2).find_first_of("{}")
+                != std::string_view::npos)
+        {
+            return false;
+        }
+
+        std::size_t value    = 0;
+        bool        inNumber = false;
+        for(char const character : replacementField) {
+            if(character < '0' || character > '9') {
+                inNumber = false;
+                continue;
+            }
+            if(!inNumber) {
+                value    = 0;
+                inNumber = true;
+            }
+            value = (value * 10U) + static_cast<std::size_t>(character - '0');
+            if(value > Max_replacement_field_number) { return false; }
+        }
+        return true;
+    }
+
     template<std::size_t N>
     consteval void compile_time_assert(char const (&str)[N],
                                        bool predicate) {
@@ -216,7 +271,39 @@ namespace detail {
     template<typename T>
     concept is_set = requires { typename T::key_type; } && !is_map<T>;
 
+    // One argument per field, in order, and no argument index on the wire - so an index above 0 makes
+    // the host report "argument not found" and drop the whole line. fmt accepts "{1} {0}", so its
+    // checker does not catch this. The same walk rejects a nested brace: a dynamic width needs a
+    // second argument the protocol cannot send (see replacementFieldWithinLimits).
+    constexpr bool fieldsCarryNoArgumentId(std::string_view stringView) {
+        for(std::size_t index = 0; index < stringView.size(); ++index) {
+            if(stringView[index] != '{') { continue; }
+            if(index + 1 < stringView.size() && stringView[index + 1] == '{') {
+                ++index;   // an escaped brace, not a field
+                continue;
+            }
+            // Only a spec or the end of the field may follow '{'; an id or name would appear here.
+            if(index + 1 >= stringView.size()) { return false; }
+            char const afterBrace = stringView[index + 1];
+            if(afterBrace != ':' && afterBrace != '}') { return false; }
+            if(afterBrace == '}') { continue; }
+
+            for(std::size_t inner = index + 2; inner < stringView.size(); ++inner) {
+                if(stringView[inner] == '}') { break; }
+                if(stringView[inner] == '{') { return false; }
+            }
+        }
+        return true;
+    }
+
 }   // namespace detail
+
+}   // namespace remote_fmt
+
+// Not at the top: the host_type mapping is written in terms of the concepts above.
+#include "fmt_check.hpp"
+
+namespace remote_fmt {
 
 template<typename... Args,
          char... chars>
@@ -227,6 +314,10 @@ consteval void checkFormatString(sc::StringConstant<chars...>) {
     detail::compile_time_assert("invalid replacement field count",
                                 detail::is_arg_count_valid<sizeof...(Args)>(
                                   std::string_view{sc::StringConstant<chars...>{}}));
+    detail::compile_time_assert(
+      "argument id or dynamic spec in replacement field",
+      detail::fieldsCarryNoArgumentId(std::string_view{sc::StringConstant<chars...>{}}));
+    detail::checkFormatStringWithFmt<Args...>(sc::StringConstant<chars...>{});
 }
 
 template<typename T>
@@ -620,6 +711,11 @@ struct formatter<std::variant<Ts...>> {
     template<typename Printer>
     constexpr auto format(std::variant<Ts...> const& variant,
                           Printer&                   printer) const {
+        // The marker is what lets the parser print fmt's variant(...) wrapper. Without it the bytes
+        // are indistinguishable from the active alternative sent on its own.
+        detail::appendExtendedTypeIdentifier<detail::ExtendedTypeIdentifier::variant>(
+          [&](auto const&... valueArgs) { printer.printHelper(valueArgs...); });
+
         return std::visit(
           [&]<typename T>(T const& value) {
               return formatter<std::remove_cvref_t<T>>{}.format(value, printer);

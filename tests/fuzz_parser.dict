@@ -1,0 +1,251 @@
+# libFuzzer dictionary for fuzz_parser.
+#
+# Three groups:
+#   1. Frame structure - markers, valid fmt-string headers, whole minimal messages.
+#   2. Type identifier bytes - every encoding parseXTypeIdentifier() accepts. The
+#      parsers reject any byte whose reserved bits are not zero, so these are the only
+#      values that get past the identifier check.
+#   3. Format specs - harvested from the "Recommended dictionary" block of a 6-worker
+#      300s run (tokens ranked by libFuzzer's own use count), plus a few hand-added
+#      specs that steer fmt into its bigint / dragonbox slow paths.
+#
+# Byte layouts (see src/remote_fmt/type_identifier.hpp):
+#   fmt_string: bits0-1 = 3, bit2 = RangeSize, bits4-5 = FmtStringType
+#   trivial:    bits0-1 = 0, bits2-3 = TypeSize, bits4-6 = TrivialType
+#   range:      bits0-1 = 1, bit2 = RangeSize, bits4-6 = RangeType, bit7 = RangeLayout
+#   time:       bits0-1 = 2, bit2 = NumeratorSize, bits3-4 = TypeSize(den),
+#               bits5-6 = TimeRepresentation, bit7 = TimeType
+
+#=== 1. frame structure ===
+start_marker="\x55"
+end_marker="\xaa"
+
+# parse() only accepts a frame whose second byte is a normal or cataloged_normal
+# fmt-string id, so these two-byte pairs are the gate into the whole parser.
+frame_normal_rs1="\x55\x13"
+frame_normal_rs2="\x55\x17"
+frame_cataloged_rs1="\x55\x33"
+frame_cataloged_rs2="\x55\x37"
+
+# Complete minimal messages, byte-for-byte as the real Printer emits them
+# (tests/corpus_generator.cpp). Splicing a whole valid frame is something byte
+# mutation almost never manages on its own.
+msg_no_args="\x55\x13\x05plain\xaa"
+msg_int="\x55\x13\x07Test {}\x18{\x00\x00\x00\xaa"
+msg_string="\x55\x13\x02{}1\x08a string\xaa"
+msg_vector="\x55\x13\x02{}\x01\x03\x18\x01\x00\x00\x00\x02\x00\x00\x00\x03\x00\x00\x00\xaa"
+msg_map="\x55\x13\x02{}\x91\x02\xd1\x02\x18\x01\x00\x00\x00\x18\x02\x00\x00\x00\xaa"
+msg_tuple="\x55\x13\x02{}\xd1\x03\x18\x01\x00\x00\x000c1\x03str\xaa"
+msg_optional="\x55\x13\x02{}a\x01\x01\x18*\x00\x00\x00\xaa"
+msg_nullopt="\x55\x13\x02{}a\x01\x00\xaa"
+msg_expected="\x55\x13\x02{}a\x02\x00\x18\x02\x00\x00\x00\xaa"
+msg_duration_ms="\x55\x13\x02{}\x0a\x01\xe8\x03{\x00\x00\x00\xaa"
+msg_duration_double="\x55\x13\x02{}b\x01\x01\x00\x00\x00\x00\x00\x00\xf8?\xaa"
+msg_styled="\x55\x13\x02{}a\x00\x11\x00\x00\xff\x00\x01\x18\x01\x00\x00\x00\xaa"
+msg_width_spec="\x55\x13\x06{:>10}\x18\x07\x00\x00\x00\xaa"
+
+#=== 2. type identifier bytes ===
+# fmt_string
+ti_fmt_sub_rs1="\x03"
+ti_fmt_sub_rs2="\x07"
+ti_fmt_normal_rs1="\x13"
+ti_fmt_normal_rs2="\x17"
+ti_fmt_cat_sub_rs1="\x23"
+ti_fmt_cat_sub_rs2="\x27"
+ti_fmt_cat_normal_rs1="\x33"
+ti_fmt_cat_normal_rs2="\x37"
+
+# trivial: unsigned / signed / boolean / character / pointer / floatingpoint
+ti_unsigned_1="\x00"
+ti_unsigned_2="\x04"
+ti_unsigned_4="\x08"
+ti_unsigned_8="\x0c"
+ti_signed_1="\x10"
+ti_signed_2="\x14"
+ti_signed_4="\x18"
+ti_signed_8="\x1c"
+ti_bool_1="\x20"
+ti_bool_2="\x24"
+ti_bool_4="\x28"
+ti_bool_8="\x2c"
+ti_char_1="\x30"
+ti_char_2="\x34"
+ti_char_4="\x38"
+ti_char_8="\x3c"
+ti_pointer_1="\x40"
+ti_pointer_2="\x44"
+ti_pointer_4="\x48"
+ti_pointer_8="\x4c"
+ti_float_1="\x50"
+ti_float_2="\x54"
+ti_float_4="\x58"
+ti_float_8="\x5c"
+
+# range: compact layout then on_ti_each layout, each with both size widths
+ti_list_rs1="\x01"
+ti_list_rs2="\x05"
+ti_list_each_rs1="\x81"
+ti_list_each_rs2="\x85"
+ti_map_rs1="\x11"
+ti_map_rs2="\x15"
+ti_map_each_rs1="\x91"
+ti_map_each_rs2="\x95"
+ti_set_rs1="\x21"
+ti_set_rs2="\x25"
+ti_set_each_rs1="\xa1"
+ti_set_each_rs2="\xa5"
+ti_string_rs1="\x31"
+ti_string_rs2="\x35"
+ti_string_each_rs1="\xb1"
+ti_string_each_rs2="\xb5"
+ti_catstring_rs1="\x41"
+ti_catstring_rs2="\x45"
+ti_catstring_each_rs1="\xc1"
+ti_catstring_each_rs2="\xc5"
+ti_tuple_rs1="\x51"
+ti_tuple_rs2="\x55"
+ti_tuple_each_rs1="\xd1"
+ti_tuple_each_rs2="\xd5"
+ti_extended_rs1="\x61"
+ti_extended_rs2="\x65"
+ti_extended_each_rs1="\xe1"
+ti_extended_each_rs2="\xe5"
+
+# time: durations with 1-byte and 8-byte numerators, 1-byte and 8-byte denominators,
+# then time_points. All four TimeRepresentations each.
+ti_dur_i32="\x02"
+ti_dur_i64="\x22"
+ti_dur_f32="\x42"
+ti_dur_f64="\x62"
+ti_dur_i32_num8="\x06"
+ti_dur_i64_num8="\x26"
+ti_dur_f32_num8="\x46"
+ti_dur_f64_num8="\x66"
+ti_dur_i32_den8="\x1a"
+ti_dur_i64_den8="\x3a"
+ti_dur_f32_den8="\x5a"
+ti_dur_f64_den8="\x7a"
+ti_tp_i32="\x82"
+ti_tp_i64="\xa2"
+ti_tp_f32="\xc2"
+ti_tp_f64="\xe2"
+
+# extended type identifier payloads: styled / optional / expected / void_type
+eti_styled="\x61\x00"
+eti_optional="\x61\x01"
+eti_expected="\x61\x02"
+eti_void="\x61\x03"
+
+#=== 3. format specs ===
+# Harvested from the fuzzer's own recommended dictionary, highest use count first.
+# Chrono specs dominate: they are the deepest reachable code in fmt from here.
+spec_open="{:"
+spec_empty="{}"
+spec_Q="{:%Q}"
+spec_Qq="{:%Q%q}"
+spec_q="{:%q}"
+spec_n="{:%n}"
+spec_H="{:%H}"
+spec_RzQ="{:%RzQ}"
+spec_j="{:%j}"
+spec_dot="{:%.}"
+spec_b="{:%b}"
+spec_I="{:%I}"
+spec_S="{:%S}"
+spec_SzQ="{:%SzQ}"
+spec_R="{:%R}"
+spec_G="{:%G}"
+spec_Qtick="{:%Q'q}"
+spec_26="{:26}"
+spec_20="{:20}"
+spec_nested_q="{:{:%q}"
+spec_U="{:%U}"
+spec_Xpct="{:X%}"
+spec_c="{:%c}"
+spec_A="{:%A}"
+spec_dotzU="{:%.zU}"
+spec_TzQ="{:%TzQ}"
+spec_X="{:%X}"
+spec_M="{:%M}"
+spec_commazQ="{:%,zQ}"
+spec_C="{:%C}"
+spec_dot02="{.02}"
+spec_nested0="{:{0:%}"
+spec_ztm="{z%t%m}"
+spec_GQq="{G%Q%q}"
+spec_nested0b="{:{0}"
+spec_pctpct="{:%%}"
+spec_dot2="{:.2}"
+spec_bangj="{:!j}"
+spec_p="{:%p}"
+spec_ZU="{:ZU}"
+spec_O="{:%O}"
+spec_nested_gt="{:{>%q}"
+spec_tq="{:%t%q}"
+spec_nested_pct="{:{%}"
+spec_d="{:%d}"
+spec_nested_z="{:{z:%}"
+spec_zpct="{:z%}"
+spec_zQ="{:zQ}"
+spec_minusqn="{:%-qn}"
+spec_Qdollarq="{:%Q$q}"
+spec_gtr="{:%>r_}"
+spec_MzQ="{:%MzQ}"
+spec_5W="{:5W}"
+spec_Rqz="{:%Rqz}"
+spec_star2="{*.2}"
+spec_Tp="{:%T%p}"
+spec_Er="{E{:%r}"
+spec_pctzSQ="{%z:SQ}"
+spec_Rn="{:%R%n}"
+spec_nested_us="{:{_%Q}"
+spec_QzQ="{:%QzQ}"
+spec_zpctq="{:z%%q}"
+
+# One-character openers the fuzzer found productive - cheap and they seed longer specs.
+spec_o_pct="{%"
+spec_o_z="{z"
+spec_o_sp="{ "
+spec_o_eq="{="
+spec_o_tilde="{~"
+spec_o_gt="{>"
+spec_o_lt="{<"
+spec_o_hash="{#"
+spec_o_star="{*"
+spec_o_dot="{."
+spec_o_semi="{;"
+spec_o_comma="{,"
+spec_o_plus="{+"
+spec_o_lbrack="{["
+spec_o_lparen="{("
+spec_o_rparen="{)"
+spec_o_q="{?"
+
+# Hand-added: not yet reached by fuzzing, but these are the specs that push fmt into
+# its bigint and dragonbox paths, where all three committed corpus_regressions live.
+spec_prec1000="{:.1000f}"
+spec_prec400="{:.400f}"
+# Numbers in a replacement field are capped at Max_replacement_field_number (4096) because the
+# parser hands width and precision straight to fmt, which allocates the padding eagerly - a
+# 27-byte message carrying "{:2147483647}" used to make the host allocate 2 GiB in one malloc.
+# These sit just under, at, and just over the cap so both the accepted and the rejected side of
+# the bound stay exercised.
+spec_width_under="{:4000}"
+spec_width_at="{:4096}"
+spec_width_over="{:4097}"
+spec_hexfloat="{:a}"
+spec_expo="{:e}"
+spec_general="{:g}"
+spec_fixed_neg="{:-.350f}"
+spec_hash_x="{:#x}"
+spec_hash_b="{:#b}"
+spec_hash_o="{:#o}"
+spec_04x="{:04x}"
+spec_plus_d="{:+d}"
+spec_center7="{:*^7}"
+spec_range_nested="{::>4}"
+spec_range_hex="{::#x}"
+spec_dyn_width="{:{}}"
+spec_dyn_prec="{:.{}}"
+spec_localized="{:L}"
+spec_escape="{:?}"

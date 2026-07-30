@@ -1,30 +1,173 @@
-diff --git a/include/fmt/format.h b/include/fmt/format.h
-index 4a65300..d9afe71 100644
---- a/include/fmt/format.h
-+++ b/include/fmt/format.h
-@@ -1286,51 +1286,51 @@ FMT_CONSTEXPR inline auto format_base2e(int base_bits, OutputIt out, UInt value,
-                                         int num_digits, bool upper = false)
-     -> OutputIt {
-   if (auto ptr = to_pointer<Char>(out, to_unsigned(num_digits))) {
-     format_base2e(base_bits, ptr, value, num_digits, upper);
-     return out;
+diff --git a/include/fmt/chrono.h b/include/fmt/chrono.h
+index e4bc1ce4..07fc14dc 100644
+--- a/include/fmt/chrono.h
++++ b/include/fmt/chrono.h
+@@ -307,8 +307,29 @@ template <typename StreamBuf> class formatbuf : public StreamBuf {
    }
-   // Make buffer large enough for any base.
-   char buffer[num_bits<UInt>()];
-   if (is_constant_evaluated()) fill_n(buffer, sizeof(buffer), '\0');
-   format_base2e(base_bits, buffer, value, num_digits, upper);
-   return detail::copy_noinline<Char>(buffer, buffer + num_digits, out);
+ };
+ 
+-inline auto get_classic_locale() -> const std::locale& {
+-  static const auto& locale = std::locale::classic();
++// FMT_USE_LOCALE == 0 means "no <locale>", which base.h's locale_ref already honours. chrono.h did
++// not: it names std::locale in the signatures below and in get_locale's union, and those are
++// non-dependent, so the header fails when *parsed*. That makes fmt/chrono.h - and fmt/std.h, which
++// includes it - unusable on a standard library built without localization.
++//
++// At FMT_USE_LOCALE == 1 the alias is upstream verbatim. At 0, locale-dependent output (%a %b %c %x
++// %X %Z, which need std::time_put) static_asserts if instantiated; duration formatting and all
++// format-spec parsing keep working.
++#if FMT_USE_LOCALE
++using locale_type = std::locale;
++#else
++struct locale_type {
++  static auto classic() -> const locale_type& {
++    static const locale_type instance{};
++    return instance;
++  }
++};
++inline auto operator==(const locale_type&, const locale_type&) -> bool { return true; }
++inline auto operator!=(const locale_type&, const locale_type&) -> bool { return false; }
++#endif
++
++inline auto get_classic_locale() -> const locale_type& {
++  static const auto& locale = locale_type::classic();
+   return locale;
  }
  
- // A converter from UTF-8 to UTF-16.
- class utf8_to_utf16 {
+@@ -320,7 +341,13 @@ template <typename CodeUnit> struct codecvt_result {
+ 
+ template <typename CodeUnit>
+ void write_codecvt(codecvt_result<CodeUnit>& out, string_view in,
+-                   const std::locale& loc) {
++                   const locale_type& loc) {
++#if !FMT_USE_LOCALE
++  static_assert(sizeof(CodeUnit) == 0,
++                "converting a locale-encoded time string needs <locale>, which this standard "
++                "library does not provide");
++  ignore_unused(out, in, loc);
++#else
+   FMT_PRAGMA_CLANG(diagnostic push)
+   FMT_PRAGMA_CLANG(diagnostic ignored "-Wdeprecated")
+   auto& f = std::use_facet<std::codecvt<CodeUnit, char, std::mbstate_t>>(loc);
+@@ -331,10 +358,11 @@ void write_codecvt(codecvt_result<CodeUnit>& out, string_view in,
+                      std::end(out.buf), out.end);
+   if (result != std::codecvt_base::ok)
+     FMT_THROW(format_error("failed to format time"));
++#endif
+ }
+ 
+ template <typename OutputIt>
+-auto write_encoded_tm_str(OutputIt out, string_view in, const std::locale& loc)
++auto write_encoded_tm_str(OutputIt out, string_view in, const locale_type& loc)
+     -> OutputIt {
+   if (detail::use_utf8 && loc != get_classic_locale()) {
+     // char16_t and char32_t codecvts are broken in MSVC (linkage errors) and
+@@ -364,7 +392,7 @@ auto write_encoded_tm_str(OutputIt out, string_view in, const std::locale& loc)
+ 
+ template <typename Char, typename OutputIt,
+           FMT_ENABLE_IF(!std::is_same<Char, char>::value)>
+-auto write_tm_str(OutputIt out, string_view sv, const std::locale& loc)
++auto write_tm_str(OutputIt out, string_view sv, const locale_type& loc)
+     -> OutputIt {
+   codecvt_result<Char> unit;
+   write_codecvt(unit, sv, loc);
+@@ -373,25 +401,32 @@ auto write_tm_str(OutputIt out, string_view sv, const std::locale& loc)
+ 
+ template <typename Char, typename OutputIt,
+           FMT_ENABLE_IF(std::is_same<Char, char>::value)>
+-auto write_tm_str(OutputIt out, string_view sv, const std::locale& loc)
++auto write_tm_str(OutputIt out, string_view sv, const locale_type& loc)
+     -> OutputIt {
+   return write_encoded_tm_str(out, sv, loc);
+ }
+ 
+ template <typename Char>
+ inline void do_write(buffer<Char>& buf, const std::tm& time,
+-                     const std::locale& loc, char format, char modifier) {
++                     const locale_type& loc, char format, char modifier) {
++#if !FMT_USE_LOCALE
++  static_assert(sizeof(Char) == 0,
++                "locale-dependent time formatting needs std::time_put from <locale>, which this "
++                "standard library does not provide");
++  ignore_unused(buf, time, loc, format, modifier);
++#else
+   auto&& format_buf = formatbuf<std::basic_streambuf<Char>>(buf);
+   auto&& os = std::basic_ostream<Char>(&format_buf);
+   os.imbue(loc);
+   const auto& facet = std::use_facet<std::time_put<Char>>(loc);
+   auto end = facet.put(os, os, Char(' '), &time, format, modifier);
+   if (end.failed()) FMT_THROW(format_error("failed to format time"));
++#endif
+ }
+ 
+ template <typename Char, typename OutputIt,
+           FMT_ENABLE_IF(!std::is_same<Char, char>::value)>
+-auto write(OutputIt out, const std::tm& time, const std::locale& loc,
++auto write(OutputIt out, const std::tm& time, const locale_type& loc,
+            char format, char modifier = 0) -> OutputIt {
+   auto&& buf = get_buffer<Char>(out);
+   do_write<Char>(buf, time, loc, format, modifier);
+@@ -400,7 +435,7 @@ auto write(OutputIt out, const std::tm& time, const std::locale& loc,
+ 
+ template <typename Char, typename OutputIt,
+           FMT_ENABLE_IF(std::is_same<Char, char>::value)>
+-auto write(OutputIt out, const std::tm& time, const std::locale& loc,
++auto write(OutputIt out, const std::tm& time, const locale_type& loc,
+            char format, char modifier = 0) -> OutputIt {
+   auto&& buf = basic_memory_buffer<Char>();
+   do_write<char>(buf, time, loc, format, modifier);
+@@ -1046,7 +1081,7 @@ class tm_writer {
   private:
-   basic_memory_buffer<wchar_t> buffer_;
+   static constexpr int days_per_week = 7;
+ 
+-  const std::locale& loc_;
++  const locale_type& loc_;
+   bool is_classic_;
+   OutputIt out_;
+   const Duration* subsecs_;
+@@ -1205,7 +1240,7 @@ class tm_writer {
+   }
  
   public:
-   FMT_API explicit utf8_to_utf16(string_view s);
-   inline operator basic_string_view<wchar_t>() const {
-     return {&buffer_[0], size()};
+-  tm_writer(const std::locale& loc, OutputIt out, const std::tm& tm,
++  tm_writer(const locale_type& loc, OutputIt out, const std::tm& tm,
+             const Duration* subsecs = nullptr)
+       : loc_(loc),
+         is_classic_(loc_ == get_classic_locale()),
+@@ -1587,7 +1622,7 @@ auto format_duration_unit(OutputIt out) -> OutputIt {
+ class get_locale {
+  private:
+   union {
+-    std::locale locale_;
++    locale_type locale_;
+   };
+   bool has_locale_ = false;
+ 
+@@ -1595,16 +1630,16 @@ class get_locale {
+   inline get_locale(bool localized, locale_ref loc) : has_locale_(localized) {
+     if (!localized) return;
+     ignore_unused(loc);
+-    ::new (&locale_) std::locale(
++    ::new (&locale_) locale_type(
+ #if FMT_USE_LOCALE
+         loc.template get<std::locale>()
+ #endif
+     );
+   }
+   inline ~get_locale() {
+-    if (has_locale_) locale_.~locale();
++    if (has_locale_) locale_.~locale_type();
+   }
+-  inline operator const std::locale&() const {
++  inline operator const locale_type&() const {
+     return has_locale_ ? locale_ : get_classic_locale();
+   }
+ };
+diff --git a/include/fmt/format.h b/include/fmt/format.h
+index 5044befd..434a8cba 100644
+--- a/include/fmt/format.h
++++ b/include/fmt/format.h
+@@ -1324,7 +1324,7 @@ class utf8_to_utf16 {
    }
    inline auto size() const -> size_t { return buffer_.size() - 1; }
    inline auto c_str() const -> const wchar_t* { return &buffer_[0]; }
@@ -32,26 +175,32 @@ index 4a65300..d9afe71 100644
 +  /*inline auto str() const -> std::wstring { return {&buffer_[0], size()}; }*/
  };
  
- enum class to_utf8_error_policy { abort, replace };
+ enum class to_utf8_error_policy { abort, replace, wtf };
+diff --git a/include/fmt/std.h b/include/fmt/std.h
+index f7d8d495..ea53fa94 100644
+--- a/include/fmt/std.h
++++ b/include/fmt/std.h
+@@ -9,7 +9,11 @@
+ #define FMT_STD_H_
  
- // A converter from UTF-16/UTF-32 (host endian) to UTF-8.
- template <typename WChar, typename Buffer = memory_buffer> class to_utf8 {
-  private:
-   Buffer buffer_;
+ #include "format.h"
+-#include "ostream.h"
++// Only needed for formatter<std::thread::id> below. It requires <ostream>/<ios>, which a library
++// without localization lacks - as it lacks std::thread - so the two are dropped together.
++#if FMT_USE_LOCALE
++#  include "ostream.h"
++#endif
  
-  public:
-   to_utf8() {}
-   explicit to_utf8(basic_string_view<WChar> s,
-                    to_utf8_error_policy policy = to_utf8_error_policy::abort) {
-     static_assert(sizeof(WChar) == 2 || sizeof(WChar) == 4,
-                   "expected utf16 or utf32");
-     if (!convert(s, policy)) {
-       FMT_THROW(std::runtime_error(sizeof(WChar) == 2 ? "invalid utf16"
-                                                       : "invalid utf32"));
-     }
+ #ifndef FMT_MODULE
+ #  include <atomic>
+@@ -392,8 +396,10 @@ struct formatter<std::bitset<N>, Char>
    }
-   operator string_view() const { return string_view(&buffer_[0], size()); }
-   auto size() const -> size_t { return buffer_.size() - 1; }
-   auto c_str() const -> const char* { return &buffer_[0]; }
-   auto str() const -> std::string { return std::string(&buffer_[0], size()); }
+ };
  
++#if FMT_USE_LOCALE
+ template <typename Char>
+ struct formatter<std::thread::id, Char> : basic_ostream_formatter<Char> {};
++#endif
+ 
+ #ifdef __cpp_lib_optional
+ template <typename T, typename Char>

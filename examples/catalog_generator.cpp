@@ -1,3 +1,4 @@
+#include <cassert>
 #include <cstddef>
 #include <fmt/format.h>
 #include <map>
@@ -39,11 +40,16 @@ int main() {
     //The data is sent to the input buffer of the remote device.
     auto const& buffer = printer.get_com_backend().memory;
 
-    //The remote device parses the data from the buffer with a catalog from the json file
+    //The remote device parses the data from the buffer with a catalog from the json file.
+    //target_generate_string_constants writes it next to the binary, named after the target.
     auto const catalog
-      = remote_fmt::parseStringConstantsFromJsonFile("catalog_generator_string_constant.json");
+      = remote_fmt::parseStringConstantsFromJsonFile("catalog_generator_string_constants.json");
+    if(!catalog) {
+        fmt::print("{}\n", catalog.error());
+        return 1;
+    }
     auto const& [message, remainingBytes, discardedBytes]
-      = remote_fmt::parse(std::span{buffer}, catalog.first, [](auto const&) {});
+      = remote_fmt::parse(std::span{buffer}, *catalog, [](auto const&) {});
 
     assert(remainingBytes.size() == 0);
     assert(discardedBytes == 0);
