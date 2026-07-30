@@ -6,6 +6,7 @@
 #include "remote_fmt/remote_fmt.hpp"
 #include "remote_fmt/type_identifier.hpp"
 
+#include <cassert>
 #include <cstddef>
 #include <fmt/format.h>
 #include <span>

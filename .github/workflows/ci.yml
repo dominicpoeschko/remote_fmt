@@ -51,8 +51,51 @@ jobs:
             - name: Run tests
               run: cd build && ctest --output-on-failure
 
-    # Dedicated longer libFuzzer run on the parser. Uses clang; the fuzz target builds for
-    # gcc automatically once gcc supports -fsanitize=fuzzer.
+    # The examples are the documentation, so they have to keep compiling against the tree rather than
+    # only against whatever is on master. They assert their own results, so they are run as well as
+    # built - which also covers the catalog generator end to end, python and nm included.
+    examples:
+        runs-on: ubuntu-latest
+        container:
+            image: archlinux:latest
+        strategy:
+            fail-fast: false
+            matrix:
+                compiler:
+                    - {cc: gcc, cxx: g++}
+                    - {cc: clang, cxx: clang++}
+
+        steps:
+            - name: Set up C++ environment
+              run: |
+                pacman -Syu --noconfirm --disable-download-timeout
+                pacman -S --noconfirm --disable-download-timeout git cmake base-devel python ${{ matrix.compiler.cc == 'clang' && 'clang' || '' }}
+
+            - name: Checkout repository
+              uses: actions/checkout@v5
+              with:
+                submodules: recursive
+
+            - name: Configure CMake
+              run: cmake -S examples -B build_examples -DUSE_FORCE_FETCH=ON
+              env:
+                CC: ${{ matrix.compiler.cc }}
+                CXX: ${{ matrix.compiler.cxx }}
+
+            - name: Build examples
+              run: cmake --build build_examples -j"$(nproc)"
+
+            # catalog_generator reads the catalog json that the build wrote next to it, so run from
+            # the build directory.
+            - name: Run examples
+              working-directory: build_examples
+              run: |
+                ./basic
+                ./catalog
+                ./catalog_generator
+
+    # Dedicated longer libFuzzer runs. Uses clang; the fuzz targets build for gcc
+    # automatically once gcc supports -fsanitize=fuzzer.
     fuzz:
         runs-on: ubuntu-latest
         container:
@@ -75,14 +118,31 @@ jobs:
                 CC: clang
                 CXX: clang++
 
-            - name: Build fuzz target
-              run: cmake --build build -j"$(nproc)" --target fuzz_parser fuzz_corpus_generator
+            - name: Build fuzz targets
+              run: cmake --build build -j"$(nproc)" --target fuzz_parser fuzz_roundtrip fuzz_corpus_generator
 
             - name: Generate seed corpus
               run: ./build/fuzz_corpus_generator build/corpus
 
-            - name: Run fuzzer
-              run: ./build/fuzz_parser -max_total_time=300 -print_final_stats=1 build/corpus tests/corpus_regressions
+            # build/corpus_committed is the committed corpus, unpacked from tests/corpus.tar.xz
+            # by the CMake configure step. Starting from it rather than from the generated
+            # seeds is the difference between ~540 and ~3900 edges at INITED, so the whole
+            # 300s goes on new ground instead of re-deriving what the last run already found.
+            # Only build/corpus is writable; libFuzzer treats the extra directories as
+            # read-only.
+            - name: Run parser fuzzer
+              run: >
+                ./build/fuzz_parser -max_total_time=300 -print_final_stats=1
+                -dict=tests/fuzz_parser.dict
+                build/corpus build/corpus_committed tests/corpus_regressions
+
+            # Round-trip fuzzer: builds its own messages through Printer, so it needs no
+            # seed corpus. Compares against fmt, so it fails on silent encode/decode
+            # disagreements and not just on crashes.
+            - name: Run round-trip fuzzer
+              run: >
+                ./build/fuzz_roundtrip -max_total_time=300 -print_final_stats=1
+                build/corpus_roundtrip
 
             # JS actions cannot run in the bare archlinux container under act (no node),
             # so skip the upload there - crash files still land in the act workdir.

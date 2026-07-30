@@ -4,11 +4,12 @@
 #include "remote_fmt/remote_fmt.hpp"
 #include "remote_fmt/type_identifier.hpp"
 
+#include <cassert>
 #include <cstddef>
 #include <fmt/format.h>
-#include <map>
 #include <span>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 using namespace sc::literals;
@@ -27,8 +28,8 @@ std::uint16_t remote_fmt::catalog<std::remove_cvref_t<decltype(testString)>>() {
     return 0;
 }
 
-//Message catalog used on the remote system
-std::map<std::uint16_t, std::string> messageCatalog{
+//Message catalog used on the remote system. The container type is what parse expects.
+std::unordered_map<std::uint16_t, std::string> messageCatalog{
   {remote_fmt::catalog<std::remove_cvref_t<decltype(testString)>>(),
    std::string{std::string_view{testString}}}
 };

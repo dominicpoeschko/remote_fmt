@@ -67,6 +67,14 @@ else()
     target_include_directories(remote_fmt INTERFACE ${fmt_uc_SOURCE_DIR}/include)
     target_compile_definitions(remote_fmt INTERFACE FMT_STATIC_THOUSANDS_SEPARATOR=1)
 
+    # fmt defaults this to on, which is wrong for a standard library without localization - every target reached through
+    # this branch. Together with fmt.patch it makes fmt/chrono.h and fmt/std.h includable; neither alone is enough.
+    target_compile_definitions(remote_fmt INTERFACE FMT_USE_LOCALE=0)
+
+    # Says fmt.patch is applied, so duration/optional/variant/expected get checked rather than skipped. Set here because
+    # only this file knows about the patch.
+    target_compile_definitions(remote_fmt INTERFACE REMOTE_FMT_FMT_CHECK_FULL=1)
+
     target_compile_options(remote_fmt INTERFACE "-DFMT_ASSERT(condition, message)=assert(condition)")
 
     find_or_fetch_package(
@@ -116,7 +124,10 @@ function(target_generate_string_constants targetname)
 
     get_target_property(options_flags ${targetname} COMPILE_OPTIONS)
 
-    if("${options_flags}" STREQUAL "options_flags_NOTFOUND")
+    # An unset property reads back as "options_flags-NOTFOUND" with a hyphen, so the old underscored comparison never
+    # matched and the sentinel was passed to the compiler as a source file. Only showed up for a target with no
+    # COMPILE_OPTIONS at all.
+    if(NOT options_flags)
         string(JOIN " " flags ${CMAKE_CXX_FLAGS})
     else()
         string(JOIN " " flags ${CMAKE_CXX_FLAGS} ${options_flags})

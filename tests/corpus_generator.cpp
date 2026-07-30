@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <variant>
 #include <vector>
 
 using namespace sc::literals;
@@ -65,6 +66,10 @@ int main(int    argc,
     dump("{}"_sc, std::optional<int>{42});
     dump("{}"_sc, std::optional<int>{});
     dump("{}"_sc, std::expected<int, int>{std::unexpected{2}});
+    dump("{}"_sc, std::expected<void, int>{});
+    // Carries the ExtendedTypeIdentifier::variant marker, which no other seed reaches.
+    dump("{}"_sc, std::variant<int, std::string_view>{7});
+    dump("{}"_sc, std::variant<int, std::string_view>{"v"sv});
     dump("{}"_sc, std::chrono::milliseconds{123});
     dump("{}"_sc, std::chrono::duration<double>{1.5});
     dump("{:>10}"_sc, 7);
