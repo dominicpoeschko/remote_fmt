@@ -982,6 +982,65 @@ namespace detail {
             };
         }
 
+        // A bitflag arrives as a counted sequence of enumerators - the target cannot build the
+        // joined name, since only compile-time strings get cataloged. Rendered as one string rather
+        // than a list: the replacement field applies to the whole "a|b", so "{:>20}" pads the result
+        // and not each name. That is also why this does not go through fixRangeReplacementField.
+        //
+        // NOTE: elements are themselves parsed structures; recursion is bounded by their nesting.
+        template<typename Iterator>
+        ParseResult<Iterator>
+        parseBitflag(Iterator                               first,
+                     Iterator                               last,
+                     std::size_t                            size,
+                     RangeLayout                            rangeLayout,
+                     std::string_view                       replacementField,
+                     bool                                   in_list,
+                     std::unordered_map<std::uint16_t,
+                                        std::string> const& stringConstantsMap) {
+            if(rangeLayout != RangeLayout::on_ti_each) { return std::nullopt; }
+            if(size == 0) { return std::nullopt; }
+
+            std::string joined;
+            while(size != 0) {
+                if(first == last) { return std::nullopt; }
+                // in_list false and the default field: the element must come back as the bare
+                // enumerator name, unquoted and unpadded, so the spec below sees the joined string.
+                auto const element = parseFromTypeId(first,
+                                                     last,
+                                                     Default_replacement_field,
+                                                     false,
+                                                     false,
+                                                     stringConstantsMap);
+                if(!element) { return std::nullopt; }
+                if(!joined.empty()) { joined += '|'; }
+                joined += element->str;
+                first = element->pos;
+                --size;
+            }
+
+            try {
+                auto const ret = [&]() {
+                    if(in_list && replacementField == Default_replacement_field) {
+                        return fmt::format("{:?}", joined);
+                    }
+                    return fmt::format(fmt::runtime(replacementField), joined);
+                }();
+                return {
+                  {ret, first}
+                };
+            } catch(std::exception const& e) {
+                errorMessagef(
+                  fmt::format("bad format for replacement field {:?}: {} (bitflag: "
+                              "\"{}\", in_list: {})\n",
+                              replacementField,
+                              e.what(),
+                              joined,
+                              in_list));
+                return std::nullopt;
+            }
+        }
+
         // NOTE: This function parses range structures which can contain nested elements.
         // Recursion depth is bounded by the nesting level of ranges in the serialized data.
         template<typename Iterator>
@@ -1035,6 +1094,14 @@ namespace detail {
                                                    in_map,
                                                    in_list,
                                                    stringConstantsMap);
+            case RangeType::bitflag:
+                return parseBitflag(first,
+                                    last,
+                                    optionalSize->first,
+                                    rangeLayout,
+                                    replacementField,
+                                    in_list,
+                                    stringConstantsMap);
             case RangeType::map: [[fallthrough]];
             case RangeType::set: [[fallthrough]];
             case RangeType::list:

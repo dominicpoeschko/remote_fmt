@@ -839,6 +839,102 @@ void enumFormatting() {
     CHECK_RT("[  red]", "{::>5}"_sc, std::vector<Color>{Color::red});
 }
 
+// Bitflags. The opt-in is these five operators - enchantum/common.hpp detects a bitflag enum by
+// looking for them, there is no trait to specialize.
+enum struct Perm : std::uint8_t { read = 1 << 0, write = 1 << 1, exec = 1 << 2 };
+
+constexpr Perm operator|(Perm a,
+                         Perm b) {
+    return Perm(std::uint8_t(a) | std::uint8_t(b));
+}
+
+constexpr Perm operator&(Perm a,
+                         Perm b) {
+    return Perm(std::uint8_t(a) & std::uint8_t(b));
+}
+
+[[maybe_unused]] constexpr Perm operator~(Perm a) { return Perm(std::uint8_t(~std::uint8_t(a))); }
+
+[[maybe_unused]] constexpr Perm& operator|=(Perm& a,
+                                            Perm  b) {
+    return a = a | b;
+}
+
+[[maybe_unused]] constexpr Perm& operator&=(Perm& a,
+                                            Perm  b) {
+    return a = a & b;
+}
+
+// Same, with a named zero so has_zero_flag is true.
+enum struct Mode : std::uint8_t { none = 0, sync = 1 << 0, async = 1 << 1 };
+
+constexpr Mode operator|(Mode a,
+                         Mode b) {
+    return Mode(std::uint8_t(a) | std::uint8_t(b));
+}
+
+constexpr Mode operator&(Mode a,
+                         Mode b) {
+    return Mode(std::uint8_t(a) & std::uint8_t(b));
+}
+
+[[maybe_unused]] constexpr Mode operator~(Mode a) { return Mode(std::uint8_t(~std::uint8_t(a))); }
+
+[[maybe_unused]] constexpr Mode& operator|=(Mode& a,
+                                            Mode  b) {
+    return a = a | b;
+}
+
+[[maybe_unused]] constexpr Mode& operator&=(Mode& a,
+                                            Mode  b) {
+    return a = a & b;
+}
+
+static_assert(enchantum::is_bitflag<Perm>,
+              "Perm must be detected as a bitflag enum");
+static_assert(enchantum::is_bitflag<Mode>,
+              "Mode must be detected as a bitflag enum");
+static_assert(!enchantum::has_zero_flag<Perm>,
+              "Perm has no zero enumerator");
+static_assert(enchantum::has_zero_flag<Mode>,
+              "Mode::none is the zero enumerator");
+
+void bitflagFormatting() {
+    // A single flag is still a single enumerator, and reads exactly like a plain enum.
+    CHECK_RT("read", "{}"_sc, Perm::read);
+    CHECK_RT("exec", "{}"_sc, Perm::exec);
+
+    // The point of the exercise: a combined value names both bits instead of printing 3.
+    CHECK_RT("read|write", "{}"_sc, Perm::read | Perm::write);
+    CHECK_RT("read|write|exec", "{}"_sc, Perm::read | Perm::write | Perm::exec);
+
+    // Order follows the enumerator declaration, not the order the caller ORed them in.
+    CHECK_RT("read|exec", "{}"_sc, Perm::exec | Perm::read);
+
+    // No zero enumerator, so 0 has no name and falls back to the number.
+    CHECK_RT("0", "{}"_sc, Perm{});
+
+    // A bit no enumerator covers means the names are not the whole value - printing "read" would
+    // silently drop the 0x8, so the whole thing goes out as an integer.
+    CHECK_RT("9", "{}"_sc, static_cast<Perm>(0x9));
+
+    // With a named zero, 0 gets its name and travels as a plain enumerator, no sequence.
+    CHECK_RT("none", "{}"_sc, Mode::none);
+    CHECK_RT("sync|async", "{}"_sc, Mode::sync | Mode::async);
+
+    // The spec applies to the joined string, not to each name: 20 wide in total.
+    CHECK_RT("          read|write", "{:>20}"_sc, Perm::read | Perm::write);
+    CHECK_RT("read|write..........", "{:.<20}"_sc, Perm::read | Perm::write);
+
+    // Nested in a container the joined name picks up the same debug quoting any other string
+    // element gets, and an explicit element spec turns it off.
+    CHECK_RT("[\"read|write\", \"exec\"]",
+             "{}"_sc,
+             std::vector<Perm>{Perm::read | Perm::write, Perm::exec});
+    CHECK_RT("[read|write]", "{::}"_sc, std::vector<Perm>{Perm::read | Perm::write});
+    CHECK_RT("(\"read|exec\", 1)", "{}"_sc, std::tuple{Perm::read | Perm::exec, 1});
+}
+
 void multipleMessages() {
     auto       first  = serialize("first {}"_sc, 1);
     auto const second = serialize("second {}"_sc, 2);
@@ -953,6 +1049,7 @@ int main() {
     fmtParityWrappers();
     optionalInsideWrapperQuirk();
     enumFormatting();
+    bitflagFormatting();
     multipleMessages();
     malformedInput();
 

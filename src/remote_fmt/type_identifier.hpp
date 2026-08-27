@@ -21,6 +21,9 @@ namespace remote_fmt { namespace detail {
         pointer,
         floatingpoint
     };
+    // The tag occupies bits 4-6 of the range type identifier byte, so there is room for exactly
+    // eight. bitflag is the eighth and last - anything further needs a wider field, which is a
+    // wire format break.
     enum class RangeType : std::uint8_t {
         list,
         map,
@@ -28,7 +31,8 @@ namespace remote_fmt { namespace detail {
         string,
         cataloged_string,
         tuple,
-        extendedTypeIdentifier
+        extendedTypeIdentifier,
+        bitflag
     };
     enum class RangeLayout : std::uint8_t { compact, on_ti_each };
     enum class TimeType : std::uint8_t { duration, time_point };
@@ -333,9 +337,7 @@ namespace remote_fmt { namespace detail {
         RangeType const   rangeType   = static_cast<RangeType>((value & std::byte{0x70}) >> 4);
         RangeLayout const rangeLayout = static_cast<RangeLayout>((value & std::byte{0x80}) >> 7);
 
-        if(static_cast<std::uint8_t>(rangeType)
-           > static_cast<std::uint8_t>(RangeType::extendedTypeIdentifier))
-        {
+        if(static_cast<std::uint8_t>(rangeType) > static_cast<std::uint8_t>(RangeType::bitflag)) {
             return std::nullopt;
         }
 

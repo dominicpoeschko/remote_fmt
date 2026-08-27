@@ -40,6 +40,7 @@
     #endif
 
     #include <enchantum/algorithms.hpp>
+    #include <enchantum/bitflags.hpp>
     #include <enchantum/enchantum.hpp>
 
     #ifdef __GNUC__
@@ -528,33 +529,94 @@ struct formatter<char[N]> {
 template<typename T>
     requires std::is_enum_v<T> && (!std::is_same_v<std::byte, T>)
 struct formatter<T> {
+private:
+    template<typename Printer>
+    static constexpr void asInt(T const& value,
+                                Printer& printer) {
+        using underlying_t = std::underlying_type_t<T>;
+
+        using format_t = std::conditional_t<
+          std::is_same_v<underlying_t, char>,
+          std::conditional_t<std::is_unsigned_v<underlying_t>, std::uint8_t, std::int8_t>,
+          underlying_t>;
+
+        formatter<format_t>{}.format(static_cast<format_t>(value), printer);
+    }
+
+#if __has_include(<enchantum/enchantum.hpp>)
+    // The name never travels: enum_switch turns the runtime value into a compile-time constant, so
+    // the string is a StringConstant and only its catalog id goes on the wire. This is why
+    // enchantum::to_string_bitflag is unusable here - it builds its result at runtime.
+    template<typename Printer>
+    static constexpr void formatEnumerator(T const& value,
+                                           Printer& printer) {
+        enchantum_ext::enum_switch(value, [&](auto enumValue) {
+            static constexpr T    enumConstant = enumValue;
+            static constexpr auto get
+              = sc::create([]() { return enchantum::to_string(enumConstant); });
+            formatter<std::remove_cvref_t<decltype(get)>>{}.format(get, printer);
+        });
+    }
+
+    // A combined value has no single name, so the set flags travel as a counted sequence of
+    // enumerators and the parser joins them with '|'. Costs one header byte plus the size plus one
+    // cataloged name per set flag.
+    template<typename Printer>
+    static constexpr void formatBitflag(T const& value,
+                                        Printer& printer) {
+        using underlying_t   = std::underlying_type_t<T>;
+        auto const bits      = static_cast<underlying_t>(value);
+        auto constexpr first = std::size_t{enchantum::has_zero_flag<T>};
+
+        auto isSet = [&](T flag) {
+            auto const v = static_cast<underlying_t>(flag);
+            return static_cast<underlying_t>(bits & v) == v;
+        };
+
+        std::size_t count = 0;
+        for(std::size_t i = first; i < enchantum::count<T>; ++i) {
+            if(isSet(enchantum::values<T>[i])) { ++count; }
+        }
+
+        auto const rangeSize = detail::sizeToRangeSize(count);
+        printer.printHelper(
+          detail::rangeTypeIdentifier<detail::RangeType::bitflag, detail::RangeLayout::on_ti_each>(
+            rangeSize));
+        detail::appendSized(rangeSize, count, [&](auto const&... valueArgs) {
+            printer.printHelper(valueArgs...);
+        });
+
+        for(std::size_t i = first; i < enchantum::count<T>; ++i) {
+            if(isSet(enchantum::values<T>[i])) {
+                formatEnumerator(enchantum::values<T>[i], printer);
+            }
+        }
+    }
+#endif
+
+public:
     template<typename Printer>
     constexpr auto format(T const& value,
                           Printer& printer) const {
-        auto as_int = [&]() {
-            using underlying_t = std::underlying_type_t<T>;
-
-            using format_t = std::conditional_t<
-              std::is_same_v<underlying_t, char>,
-              std::conditional_t<std::is_unsigned_v<underlying_t>, std::uint8_t, std::int8_t>,
-              underlying_t>;
-
-            return formatter<format_t>{}.format(static_cast<format_t>(value), printer);
-        };
 #if __has_include(<enchantum/enchantum.hpp>)
-        if(enchantum::contains(value)) {
-            enchantum_ext::enum_switch(value, [&](auto enumValue) {
-                static constexpr T    enumConstant = enumValue;
-                static constexpr auto get
-                  = sc::create([]() { return enchantum::to_string(enumConstant); });
-                formatter<std::remove_cvref_t<decltype(get)>>{}.format(get, printer);
-            });
-            return;
+        if constexpr(enchantum::is_bitflag<T>) {
+            // An unknown bit means the enumerators are not the whole truth, so print the number
+            // rather than a name set that silently drops it.
+            if(!enchantum::contains_bitflag(value)) { return asInt(value, printer); }
+
+            if constexpr(enchantum::has_zero_flag<T>) {
+                if(static_cast<std::underlying_type_t<T>>(value) == 0) {
+                    return formatEnumerator(enchantum::values<T>[0], printer);
+                }
+            }
+            return formatBitflag(value, printer);
+        } else if(enchantum::contains(value)) {
+            return formatEnumerator(value, printer);
         } else {
-            return as_int();
+            return asInt(value, printer);
         }
 #else
-        return as_int();
+        return asInt(value, printer);
 #endif
     }
 };
