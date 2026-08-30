@@ -93,8 +93,20 @@ for f in args.objects:
         sys.exit(1)
 
     try:
-        x = subprocess.run([args.nm, "-uC", f],
-                           check=True, capture_output=True, text=True)
+        # prefer llvm-cxxfilt: binutils' demangler gives up on very long symbols
+        cxxfilt = shutil.which("llvm-cxxfilt")
+        if cxxfilt:
+            raw = subprocess.run([args.nm, "-u", f],
+                                 check=True, capture_output=True, text=True)
+            names = [l.split()[-1]
+                     for l in raw.stdout.splitlines() if l.strip()]
+            dem = subprocess.run([cxxfilt], input="\n".join(names) + "\n",
+                                 check=True, capture_output=True, text=True)
+            x = subprocess.CompletedProcess(args=[], returncode=0,
+                                            stdout="\n".join("U " + d for d in dem.stdout.splitlines()))
+        else:
+            x = subprocess.run([args.nm, "-uC", f],
+                               check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
         print(f"Error running nm on '{f}': {e}", file=sys.stderr)
         sys.exit(1)

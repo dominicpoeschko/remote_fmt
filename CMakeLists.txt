@@ -86,7 +86,8 @@ else()
         GIT_BRANCH
         main)
 
-    target_include_directories(remote_fmt INTERFACE ${enchantum_SOURCE_DIR}/enchantum/include)
+    # SYSTEM: enchantum triggers -Wundef under gcc
+    target_include_directories(remote_fmt SYSTEM INTERFACE ${enchantum_SOURCE_DIR}/enchantum/include)
 
 endif()
 

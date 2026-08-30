@@ -235,17 +235,13 @@ namespace detail {
         return true;
     }
 
+    // never defined: the call fails constant evaluation, turning a failed assert into a compile error
+    void compileTimeAssertFailed(char const* message);
+
     template<std::size_t N>
     consteval void compile_time_assert(char const (&str)[N],
                                        bool predicate) {
-#ifdef __clang__
-    #pragma clang diagnostic push
-    #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
-#endif
-        [[maybe_unused]] auto const character = str[N - 1 + static_cast<std::size_t>(!predicate)];
-#ifdef __clang__
-    #pragma clang diagnostic pop
-#endif
+        if(!predicate) { compileTimeAssertFailed(str); }
     }
 
     template<typename T>
