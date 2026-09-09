@@ -546,7 +546,11 @@ namespace detail {
                                                             std::string_view replacementField) {
             using duration = std::chrono::duration<Rep, Ratio>;
             try {
-                if(timeType == TimeType::duration) {
+                // A time_point is its duration since the clock's epoch, which is how the
+                // custom-ratio path below already renders it ("<count>[num/den]s") and what
+                // the LogEntry parser expects back. Only ever reached with a standard
+                // period, i.e. a LogClock ticking in a unit fmt knows a suffix for.
+                if(timeType == TimeType::duration || timeType == TimeType::time_point) {
                     return fmt::format(fmt::runtime(replacementField), duration{value});
                 }
             } catch(std::exception const& e) {
