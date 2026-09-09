@@ -1,0 +1,5 @@
+# Fuzz corpora are byte-exact artifacts: a seed that gets line-ending normalised stops reproducing
+# what it was committed for, silently. Nesting seeds are long runs of printable bytes with no NUL,
+# so git's own heuristic does not classify them as binary.
+tests/corpus_regressions/* binary
+tests/corpus.tar.xz binary
