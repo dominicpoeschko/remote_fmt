@@ -271,13 +271,44 @@ namespace detail {
     struct Parser {
         std::function<void(std::string_view)> errorMessagef;
 
+        // Nesting is whatever the device sent: a list of a list of a list ... costs two bytes per
+        // level on the wire but a whole parseFromTypeId/parseType/parseRange/parseList frame on the
+        // stack, so a few kilobytes run the stack out. Nothing legitimate nests past a handful of
+        // levels, so the limit only ever rejects a frame that was already malformed.
+        static constexpr std::size_t Max_nesting_depth = 64;
+
+        std::size_t nestingDepth{};
+
+        struct NestingGuard {
+            std::size_t& depth;
+
+            explicit NestingGuard(std::size_t& depth_) : depth{depth_} { ++depth; }
+
+            NestingGuard(NestingGuard const&) = delete;
+
+            ~NestingGuard() { --depth; }
+        };
+
         template<typename ErrorMessageF>
             requires(!std::is_same_v<std::decay_t<ErrorMessageF>,
                                      Parser>)
         explicit Parser(ErrorMessageF&& errorMessagef_)
           : errorMessagef{std::forward<ErrorMessageF>(errorMessagef_)} {}
 
-        std::optional<std::string_view>
+        // Running out of replacement fields and being malformed are different answers: the first
+        // ends the caller's loop normally, the second has to fail the frame.
+        struct NextReplacementField {
+            std::optional<std::string_view> field{};
+            bool                            malformed{false};
+        };
+
+        // The three rejections below used to be asserts. The format string comes from the wire or
+        // from the catalog file, so it is device-controlled either way and none of this is an
+        // invariant to assert on - under NDEBUG the assert vanishes and the input that aborts a test
+        // build sails through a release one. checkReplacementFieldCount is deliberately not trusted
+        // to have ruled these out: it is a second implementation of the same grammar, and the two
+        // disagreeing is what produced the abort.
+        NextReplacementField
         getNextReplacementFieldFromFmtStringAndAppendStrings(std::string&      out,
                                                              std::string_view& fmtString) {
             while(!fmtString.empty()) {
@@ -288,10 +319,11 @@ namespace detail {
                 if(curlyPos == fmtString.end()) {
                     out += fmtString;
                     fmtString = std::string_view{};
-                    return std::nullopt;
+                    return {};
                 }
 
-                assert(std::next(curlyPos) != fmtString.end());
+                // A trailing lone brace: neither an escape pair nor a field that can close.
+                if(std::next(curlyPos) == fmtString.end()) { return {.malformed = true}; }
 
                 if(*(std::next(curlyPos)) == *curlyPos) {
                     out += std::string_view{fmtString.begin(), std::next(curlyPos)};
@@ -299,15 +331,19 @@ namespace detail {
                     continue;
                 }
 
-                assert(*curlyPos == '{');
+                // An unescaped '}' with no field open closes nothing.
+                if(*curlyPos != '{') { return {.malformed = true}; }
+
                 auto const closeCurlyPos = std::ranges::find(fmtString, '}');
-                assert(closeCurlyPos != fmtString.end());
+                if(closeCurlyPos == fmtString.end()) { return {.malformed = true}; }
 
                 out += std::string_view{fmtString.begin(), curlyPos};
                 fmtString = std::string_view{std::next(closeCurlyPos), fmtString.end()};
-                return std::string_view{curlyPos, std::next(closeCurlyPos)};
+                return {
+                  .field = std::string_view{curlyPos, std::next(closeCurlyPos)}
+                };
             }
-            return std::nullopt;
+            return {};
         }
 
         using trivial_t
@@ -862,8 +898,8 @@ namespace detail {
             return rrf;
         }
 
-        // NOTE: This function parses tuple structures, which can contain nested elements.
-        // Recursion depth is bounded by the nesting level of tuples in the serialized data.
+        // Tuple elements are parsed through parseFromTypeId, so their nesting is what
+        // Max_nesting_depth bounds.
         template<typename Iterator>
         ParseResult<Iterator>
         parseTuple(Iterator                               first,
@@ -915,8 +951,8 @@ namespace detail {
             };
         }
 
-        // NOTE: This function parses list/collection structures.
-        // Recursion depth is bounded by the nesting level of lists in the serialized data.
+        // List elements are parsed through parseFromTypeId, so their nesting is what
+        // Max_nesting_depth bounds.
         template<typename Iterator>
         ParseResult<Iterator> parseList(Iterator                               first,
                                         Iterator                               last,
@@ -1045,8 +1081,8 @@ namespace detail {
             }
         }
 
-        // NOTE: This function parses range structures which can contain nested elements.
-        // Recursion depth is bounded by the nesting level of ranges in the serialized data.
+        // Ranges nest through their elements, and every element goes through parseFromTypeId,
+        // so Max_nesting_depth bounds them.
         template<typename Iterator>
         ParseResult<Iterator>
         parseRange(Iterator                               first,
@@ -1121,8 +1157,8 @@ namespace detail {
             return std::nullopt;
         }
 
-        // NOTE: This function dispatches parsing based on type identifiers.
-        // Recursion depth is bounded by the complexity of nested type structures in the data.
+        // Dispatches on the type identifier. It recurses only via parseRange, which reaches its
+        // elements through parseFromTypeId, so Max_nesting_depth bounds it.
         template<typename Iterator>
         ParseResult<Iterator> parseType(Iterator                               first,
                                         Iterator                               last,
@@ -1203,8 +1239,8 @@ namespace detail {
             };
         }
 
-        // NOTE: This function handles format string parsing with nested arguments.
-        // Recursion occurs when parsing nested format specifiers and is bounded by format complexity.
+        // A format string's own arguments are parsed through parseFromTypeId, so a sub format
+        // string nested inside another is bounded by Max_nesting_depth.
         template<typename Iterator>
         ParseResult<Iterator> parseFmt(Iterator                               first,
                                        Iterator                               last,
@@ -1222,24 +1258,25 @@ namespace detail {
             // Reserve space based on format string length to reduce reallocations
             ret.reserve(fmtString.size() * 2);
             while(iterator != last) {
-                auto const optionalReplacementField
+                auto const next
                   = getNextReplacementFieldFromFmtStringAndAppendStrings(ret, fmtString);
-                if(!optionalReplacementField) { break; }
-                if(!replacementFieldWithinLimits(*optionalReplacementField)) {
+                if(next.malformed) {
+                    errorMessagef(
+                      fmt::format("malformed format string {:?}", optionalFmtString->str));
+                    return std::nullopt;
+                }
+                if(!next.field) { break; }
+                if(!replacementFieldWithinLimits(*next.field)) {
                     errorMessagef(
                       fmt::format("replacement field {:?} is a dynamic spec or carries a number "
                                   "above the limit "
                                   "of {}",
-                                  *optionalReplacementField,
+                                  *next.field,
                                   Max_replacement_field_number));
                     return std::nullopt;
                 }
-                auto const optionalStr = parseFromTypeId(iterator,
-                                                         last,
-                                                         *optionalReplacementField,
-                                                         false,
-                                                         false,
-                                                         stringConstantsMap);
+                auto const optionalStr
+                  = parseFromTypeId(iterator, last, *next.field, false, false, stringConstantsMap);
                 if(!optionalStr) { return std::nullopt; }
                 iterator = optionalStr->pos;
                 ret += optionalStr->str;
@@ -1250,8 +1287,9 @@ namespace detail {
             };
         }
 
-        // NOTE: This is the main entry point for recursive parsing of data structures.
-        // Recursion depth is naturally bounded by the structure of the serialized data being parsed.
+        // Every recursive path goes through here - list, set and map elements, tuple and bitflag
+        // elements, the value inside an optional/expected/variant/styled, and a sub format string's
+        // own arguments - so this is the one place the depth has to be counted.
         template<typename Iterator>
         ParseResult<Iterator>
         parseFromTypeId(Iterator                               first,
@@ -1262,6 +1300,12 @@ namespace detail {
                         std::unordered_map<std::uint16_t,
                                            std::string> const& stringConstantsMap) {
             if(first == last) { return std::nullopt; }
+
+            if(nestingDepth >= Max_nesting_depth) {
+                errorMessagef(fmt::format("nesting deeper than {} levels", Max_nesting_depth));
+                return std::nullopt;
+            }
+            NestingGuard const guard{nestingDepth};
 
             TypeIdentifier const typeId = static_cast<TypeIdentifier>(*first & std::byte{0x03});
             if(typeId == TypeIdentifier::fmt_string) {

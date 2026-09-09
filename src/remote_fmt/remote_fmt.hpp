@@ -133,6 +133,14 @@ namespace detail {
         return T;
     }
 
+    // The only thing standing between a format string and the parser's own scan of it, so the two
+    // have to agree on one grammar. They did not: this treated "}}" as an escape pair anywhere,
+    // while the parser ends a field at the first '}' and only then looks at what follows, so
+    // "{:}}x}" counted as balanced here and left the scan staring at a lone '}'.
+    //
+    // Braces now escape only outside a field, matching fmt and what the scan already assumed. A '{'
+    // inside an open field is still counted rather than refused, so a dynamic spec ("{:{}}") reaches
+    // replacementFieldWithinLimits and is rejected there with an error.
     constexpr std::optional<std::size_t> checkReplacementFieldCount(std::string_view stringView) {
         int         openCount = 0;
         std::size_t argCount  = 0;
@@ -143,13 +151,17 @@ namespace detail {
             char const character = *iterator;
 
             if(character == '{') {
-                if(std::next(iterator) != stringView.end() && *std::next(iterator) == '{') {
+                if(openCount == 0 && std::next(iterator) != stringView.end()
+                   && *std::next(iterator) == '{')
+                {
                     std::advance(iterator, 1);
                 } else {
                     ++openCount;
                 }
             } else if(character == '}') {
-                if(std::next(iterator) != stringView.end() && *std::next(iterator) == '}') {
+                if(openCount == 0 && std::next(iterator) != stringView.end()
+                   && *std::next(iterator) == '}')
+                {
                     std::advance(iterator, 1);
                 } else {
                     if(--openCount == 0) {

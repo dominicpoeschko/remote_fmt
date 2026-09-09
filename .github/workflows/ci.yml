@@ -14,6 +14,9 @@ jobs:
         runs-on: ubuntu-latest
         container:
             image: archlinux:latest
+        # Release is the only build type that defines NDEBUG, and it is the default, so without the
+        # two Debug entries every job here compiles the asserts out and none of them can ever fire.
+        # They mirror the sanitizer entries so the deepest-checking configurations carry them.
         strategy:
             fail-fast: false
             matrix:
@@ -22,6 +25,15 @@ jobs:
                     - {cc: gcc, cxx: g++, stdlib_debug: true, sanitizer: address}
                     - {cc: clang, cxx: clang++}
                     - {cc: clang, cxx: clang++, stdlib: libc++, stdlib_debug: true, sanitizer: address}
+                    - {cc: gcc, cxx: g++, build_type: Debug, stdlib_debug: true, sanitizer: address}
+                    - {
+                        cc: clang,
+                        cxx: clang++,
+                        build_type: Debug,
+                        stdlib: libc++,
+                        stdlib_debug: true,
+                        sanitizer: address,
+                      }
 
         steps:
             - name: Set up C++ environment
@@ -38,6 +50,7 @@ jobs:
               run: >
                 cmake -S tests -B build
                 -DUSE_FORCE_FETCH=ON
+                ${{ matrix.compiler.build_type && format('-DCMAKE_BUILD_TYPE={0}', matrix.compiler.build_type) || '' }}
                 ${{ matrix.compiler.sanitizer && format('-DUSE_SANITIZER={0}', matrix.compiler.sanitizer) || '' }}
                 ${{ matrix.compiler.stdlib && format('-DUSE_STD_LIB={0}', matrix.compiler.stdlib) || '' }}
                 ${{ matrix.compiler.stdlib_debug && '-DUSE_STDLIB_DEBUG=true' || '' }}
@@ -96,10 +109,18 @@ jobs:
 
     # Dedicated longer libFuzzer runs. Uses clang; the fuzz targets build for gcc
     # automatically once gcc supports -fsanitize=fuzzer.
+    #
+    # Both build types: Release is what ships, Debug is the only one where the parser's asserts
+    # exist at all. They also differ in codegen, so a sanitizer report from one is not guaranteed
+    # from the other. Measured execution rates are within 5% and the entries run in parallel.
     fuzz:
         runs-on: ubuntu-latest
         container:
             image: archlinux:latest
+        strategy:
+            fail-fast: false
+            matrix:
+                build_type: [Release, Debug]
 
         steps:
             - name: Set up C++ environment
@@ -113,7 +134,7 @@ jobs:
                 submodules: recursive
 
             - name: Configure CMake
-              run: cmake -S tests -B build -DUSE_FORCE_FETCH=ON
+              run: cmake -S tests -B build -DUSE_FORCE_FETCH=ON -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
               env:
                 CC: clang
                 CXX: clang++
@@ -130,9 +151,16 @@ jobs:
             # 300s goes on new ground instead of re-deriving what the last run already found.
             # Only build/corpus is writable; libFuzzer treats the extra directories as
             # read-only.
+            #
+            # -max_len must stay at least as large as the biggest seed: a limit below a seed does
+            # not skip it, it truncates it, which would silently defang
+            # corpus_regressions/parser-nesting-stack-overflow (~16kB is needed to overflow).
+            # Absent the flag libFuzzer derives the limit from the largest corpus file, so pinning
+            # it keeps the ceiling off whatever the corpus happens to contain. Costs ~8% of the rate.
             - name: Run parser fuzzer
               run: >
                 ./build/fuzz_parser -max_total_time=300 -print_final_stats=1
+                -max_len=65536
                 -dict=tests/fuzz_parser.dict
                 build/corpus build/corpus_committed tests/corpus_regressions
 
@@ -150,7 +178,8 @@ jobs:
               if: failure() && !env.ACT
               uses: actions/upload-artifact@v4
               with:
-                name: fuzz-crashes
+                # Per build type: upload-artifact@v4 rejects a name another job already uploaded.
+                name: fuzz-crashes-${{ matrix.build_type }}
                 path: |
                   crash-*
                   leak-*

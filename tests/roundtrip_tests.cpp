@@ -378,19 +378,13 @@ void replacementFieldNumberLimit() {
         // nested-brace rule, which reports it.
         CHECK(rejectsRaw("{0:{0}Q%q0r}"), "self-referential dynamic width reported");
 
-        // These are stopped earlier and more bluntly: checkReplacementFieldCount reads the trailing
-        // "}}" as an escaped brace, so the count never balances and the format string is refused
-        // before any field is looked at. Refused all the same, just without an error message.
-        auto const refusedQuietly = [](std::string_view fmtString) {
-            auto const buffer = rawFrame(fmtString, 0x7FFFFFFF);
-            auto const [message, remaining, discarded]
-              = remote_fmt::parse(std::span{buffer}, emptyCatalog(), [](std::string_view) {});
-            return !message;
-        };
-        CHECK(refusedQuietly("{0:{0}}"), "self-referential dynamic width refused");
-        CHECK(refusedQuietly("{:{}}"), "dynamic width refused");
-        CHECK(refusedQuietly("{:.{}}"), "dynamic precision refused");
-        CHECK(refusedQuietly("{:{0}}"), "indexed dynamic width refused");
+        // The plain dynamic specs reach the same rule and are reported the same way. They used to be
+        // refused a stage earlier and silently, by the escape rule that also mis-read "{:}}x}" as
+        // balanced; now that braces escape only outside a field, they arrive here with an error.
+        CHECK(rejectsRaw("{0:{0}}"), "self-referential dynamic width reported");
+        CHECK(rejectsRaw("{:{}}"), "dynamic width reported");
+        CHECK(rejectsRaw("{:.{}}"), "dynamic precision reported");
+        CHECK(rejectsRaw("{:{0}}"), "indexed dynamic width reported");
     }
 
     // The limit itself still works, as does the largest precision anyone can justify: the exact
@@ -1026,6 +1020,173 @@ void malformedInput() {
     }
 }
 
+// A frame whose argument is "depth" one-element ranges wrapped around a u8. A level costs two
+// bytes on the wire and a whole parse frame on the stack, and the depth is the device's choice.
+template<remote_fmt::detail::RangeType rangeType>
+std::vector<std::byte> nestedFrame(std::size_t depth) {
+    std::vector<std::byte> buffer;
+    buffer.push_back(remote_fmt::protocol::Start_marker);
+    buffer.push_back(
+      remote_fmt::detail::fmtStringTypeIdentifier<remote_fmt::detail::FmtStringType::normal>(
+        remote_fmt::detail::RangeSize::_1));
+    buffer.push_back(static_cast<std::byte>(2));
+    buffer.push_back(static_cast<std::byte>('{'));
+    buffer.push_back(static_cast<std::byte>('}'));
+
+    // on_ti_each: each element carries its own type identifier, so a level can hold another range.
+    for(std::size_t level = 0; level < depth; ++level) {
+        buffer.push_back(
+          remote_fmt::detail::rangeTypeIdentifier<rangeType,
+                                                  remote_fmt::detail::RangeLayout::on_ti_each>(
+            remote_fmt::detail::RangeSize::_1));
+        buffer.push_back(static_cast<std::byte>(1));
+    }
+
+    buffer.push_back(
+      remote_fmt::detail::trivialTypeIdentifier<remote_fmt::detail::TrivialType::unsigned_,
+                                                remote_fmt::detail::TypeSize::_1>());
+    buffer.push_back(static_cast<std::byte>(42));
+    buffer.push_back(remote_fmt::protocol::End_marker);
+    return buffer;
+}
+
+// Asserts the rejection, not the crash: a test that overflowed the stack would take the binary
+// down with it and report nothing.
+void nestingDepthLimit() {
+    constexpr auto Limit = remote_fmt::detail::Parser::Max_nesting_depth;
+
+    auto const parseNested = [](auto const& buffer, std::string& error) {
+        auto const [message, remaining, discarded]
+          = remote_fmt::parse(std::span{buffer}, emptyCatalog(), [&](std::string_view e) {
+                error = e;
+            });
+        return message;
+    };
+
+    // Shallow nesting is ordinary data and has to keep working.
+    {
+        std::string error;
+        auto const  message
+          = parseNested(nestedFrame<remote_fmt::detail::RangeType::list>(4), error);
+        CHECK(message.has_value() && *message == "[[[[42]]]]", "4-deep list renders");
+    }
+
+    // The boundary itself, from both sides.
+    {
+        std::string error;
+        auto const  message
+          = parseNested(nestedFrame<remote_fmt::detail::RangeType::list>(Limit - 1), error);
+        CHECK(message.has_value(), "nesting one below the limit still parses");
+    }
+    {
+        std::string error;
+        auto const  message
+          = parseNested(nestedFrame<remote_fmt::detail::RangeType::list>(Limit), error);
+        CHECK(!message, "nesting at the limit is refused");
+        CHECK(!error.empty(), "nesting at the limit reports an error");
+    }
+
+    // Deep enough to overflow in every build if the guard were gone: the least sensitive of them,
+    // the -O2 sanitizer build, dies between 6 000 and 8 000 levels.
+    for(std::size_t depth : {std::size_t{8000}, std::size_t{20000}}) {
+        {
+            std::string error;
+            auto const  message
+              = parseNested(nestedFrame<remote_fmt::detail::RangeType::list>(depth), error);
+            CHECK(!message, "deeply nested list refused");
+        }
+        {
+            // parseTuple recurses through parseFromTypeId just as parseList does.
+            std::string error;
+            auto const  message
+              = parseNested(nestedFrame<remote_fmt::detail::RangeType::tuple>(depth), error);
+            CHECK(!message, "deeply nested tuple refused");
+        }
+    }
+
+    // The decoder keeps working afterwards - a refused frame must not poison the stream.
+    CHECK_RT("Test 123", "Test {}"_sc, 123);
+}
+
+// Format strings checkReplacementFieldCount accepted but the parser's own scan could not consume.
+// The scan asserted on exactly what the validator was supposed to guarantee, so these aborted an
+// assert-enabled build and sailed through a release one. Rejection is the contract, in every build.
+void malformedFormatString() {
+    auto const refuses = [](std::string_view fmtString) {
+        auto const buffer = rawFrame(fmtString, 42);
+        auto const [message, remaining, discarded]
+          = remote_fmt::parse(std::span{buffer}, emptyCatalog(), [](std::string_view) {});
+        return !message;
+    };
+
+    // The two that actually aborted: the validator read "}}" as an escape pair even inside an open
+    // field, called the string balanced, and left the scan staring at a lone '}'.
+    CHECK(refuses("{:}}x}"), "brace escape inside an open field refused");
+
+    // The same disagreement, in the shape that had been sitting in the committed fuzz corpus all
+    // along - it only ever failed where asserts were live.
+    CHECK(refuses("{}} {{}"), "corpus shape refused");
+
+    // Neighbouring shapes, already refused before the fix. Here so the stricter escape rule cannot
+    // regress them, not because they ever aborted.
+    CHECK(refuses("{"), "trailing lone open brace refused");
+    CHECK(refuses("}"), "trailing lone close brace refused");
+    CHECK(refuses("x{"), "lone open brace after text refused");
+    CHECK(refuses("{}{"), "lone open brace after a field refused");
+    CHECK(refuses("{:>10"), "unclosed replacement field refused");
+
+    // Escapes that really are escapes still round-trip, so the stricter rule costs nothing.
+    CHECK_RT("{}", "{{}}"_sc);
+    CHECK_RT("{7}", "{{{}}}"_sc, 7);
+    CHECK_RT("7 }", "{} }}"_sc, 7);
+    CHECK_RT("{ 7", "{{ {}"_sc, 7);
+
+    CHECK_RT("Test 123", "Test {}"_sc, 123);
+}
+
+// The scan that used to assert, tested directly rather than through parse(). Nothing on the wire
+// reaches these branches today - checkReplacementFieldCount refuses all of it first, which is the
+// point of the root fix - but the two are separate implementations of one grammar, and this is the
+// layer that decides whether the next divergence between them is a rejected frame or an abort.
+void replacementFieldScanRejections() {
+    remote_fmt::detail::Parser parser{[](std::string_view) {}};
+
+    auto const scan = [&parser](std::string_view fmtString) {
+        std::string      out;
+        std::string_view rest = fmtString;
+        return parser.getNextReplacementFieldFromFmtStringAndAppendStrings(out, rest);
+    };
+
+    // A trailing brace of either kind: neither an escape pair nor a field that can close.
+    CHECK(scan("{").malformed, "trailing '{' reported malformed");
+    CHECK(scan("}").malformed, "trailing '}' reported malformed");
+    CHECK(scan("abc{").malformed, "trailing '{' after text reported malformed");
+
+    // An unescaped '}' with no field open closes nothing.
+    CHECK(scan("}x").malformed, "unopened '}' reported malformed");
+
+    // A field that never closes: the search for '}' runs off the end.
+    CHECK(scan("{:>10").malformed, "unclosed field reported malformed");
+
+    // The well-formed cases still behave, and running out of fields is not "malformed".
+    {
+        auto const field = scan("{}");
+        CHECK(!field.malformed && field.field && *field.field == "{}", "'{}' yields one field");
+    }
+    {
+        auto const field = scan("a {:>4} b");
+        CHECK(!field.malformed && field.field && *field.field == "{:>4}", "spec field returned");
+    }
+    {
+        auto const none = scan("plain text");
+        CHECK(!none.malformed && !none.field, "no field is not malformed");
+    }
+    {
+        auto const none = scan("{{}}");
+        CHECK(!none.malformed && !none.field, "escapes alone yield no field");
+    }
+}
+
 }   // namespace
 
 int main() {
@@ -1052,6 +1213,9 @@ int main() {
     bitflagFormatting();
     multipleMessages();
     malformedInput();
+    nestingDepthLimit();
+    malformedFormatString();
+    replacementFieldScanRejections();
 
     if(failures != 0) {
         std::printf("%d test(s) failed\n", failures);
