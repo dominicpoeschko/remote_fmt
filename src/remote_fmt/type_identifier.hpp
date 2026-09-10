@@ -51,7 +51,16 @@ namespace remote_fmt { namespace detail {
         optional,
         expected,
         void_type,
-        variant
+        variant,
+        // A number with a unit: the marker, then the unit symbol (a cataloged string, so two
+        // bytes), then the value. The value is parsed with the *outer* replacement field, so
+        // "{:.2f}" reaches the number and the symbol is appended after it -- which a sub
+        // format string could not do, because that renders to a string before the outer spec
+        // is applied and ".2f" on a string is an error. Fill, align and width are the exception:
+        // those are applied to the number and symbol together, because that is what "{:>10}"
+        // means everywhere else. A quantity_point travels as one of these too, carrying the
+        // value its quantity_from_zero() yields.
+        quantity
     };
 
     template<typename T,

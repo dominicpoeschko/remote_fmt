@@ -52,6 +52,70 @@ namespace detail {
     template<typename Iterator>
     using ParseResult = std::optional<ParseResult_<Iterator>>;
 
+    struct FillAlignWidth {
+        std::string padField;     ///< "{:*>10}" -- what pads the finished text, "{}" for nothing
+        std::string valueField;   ///< the caller's field with fill, align and width taken out
+    };
+
+    /// Split a replacement field into the part that positions the finished text and the part that
+    /// renders the value. A quantity is one argument made of two pieces, so "{:>10}" has to pad
+    /// "1.5 V" as a whole while ".2f" still reaches the number alone.
+    ///
+    /// The zero flag is the exception and is left where it is: "{:08.2f}" asks for sign-aware zero
+    /// padding, which is a property of the number ("00001.50 V"), and zero-padding a string that
+    /// ends in a unit symbol would be nonsense. Dynamic widths ("{:{}}") never get here - they are
+    /// rejected on the target at compile time and again by replacementFieldWithinLimits.
+    inline FillAlignWidth splitFillAlignWidth(std::string_view replacementField) {
+        FillAlignWidth result{"{}", std::string{replacementField}};
+
+        if(!replacementField.starts_with("{:") || !replacementField.ends_with('}')) {
+            return result;
+        }
+        std::string_view spec = replacementField.substr(2, replacementField.size() - 3);
+
+        auto const isAlign = [](char c) { return c == '<' || c == '>' || c == '^'; };
+
+        // [[fill]align]: a leading character is a fill only if an align follows it, which is also
+        // what keeps "{:0>10}" from being read as the zero flag.
+        std::string_view fillAlign;
+        if(spec.size() >= 2 && isAlign(spec[1])) {
+            fillAlign = spec.substr(0, 2);
+            spec      = spec.substr(2);
+        } else if(!spec.empty() && isAlign(spec[0])) {
+            fillAlign = spec.substr(0, 1);
+            spec      = spec.substr(1);
+        }
+
+        // [sign][#][0][width]: everything from here on stays with the number except the width.
+        std::size_t i = 0;
+        if(i < spec.size() && (spec[i] == '+' || spec[i] == '-' || spec[i] == ' ')) { ++i; }
+        if(i < spec.size() && spec[i] == '#') { ++i; }
+        if(i < spec.size() && spec[i] == '0') {
+            // Zero padding: the width belongs to the number too. Nothing to split off.
+            return result;
+        }
+
+        std::size_t const widthStart = i;
+        while(i < spec.size() && spec[i] >= '0' && spec[i] <= '9') { ++i; }
+        std::string_view const width = spec.substr(widthStart, i - widthStart);
+
+        if(fillAlign.empty() && width.empty()) { return result; }
+
+        // A quantity takes the spec its representation would have taken, and a number aligns
+        // right, so a bare width right-aligns rather than defaulting to a string's left.
+        result.padField = "{:";
+        result.padField += fillAlign.empty() ? std::string_view{">"} : fillAlign;
+        result.padField += width;
+        result.padField += '}';
+
+        result.valueField = "{:";
+        result.valueField += spec.substr(0, widthStart);
+        result.valueField += spec.substr(i);
+        result.valueField += '}';
+
+        return result;
+    }
+
     template<ExtendedTypeIdentifier>
     struct ExtendedTypeIdentifierParser;
 
@@ -182,6 +246,59 @@ namespace detail {
             if(!inner_result) { return std::nullopt; }
             return ParseResult_<Iterator>{fmt::format("optional({})", inner_result->str),
                                           inner_result->pos};
+        }
+    };
+
+    template<>
+    struct ExtendedTypeIdentifierParser<ExtendedTypeIdentifier::quantity> {
+        /// The unit symbol, then the value. The value is parsed with the caller's own
+        /// replacement field, so a quantity takes the spec its representation would have
+        /// taken: "{:.2f}" on a float quantity, "{:#x}" on an integral one. The symbol is
+        /// read with an empty field and outside any list, so it arrives as the bare
+        /// characters rather than in fmt's debug quotes.
+        ///
+        /// Fill, align and width are held back and applied to number and symbol together, so
+        /// "{:>10}" positions "1.5 V" the way it would position any other argument rather than
+        /// padding the number and leaving the unit hanging past the column.
+        template<typename Iterator,
+                 typename Parser>
+        static ParseResult<Iterator>
+        parse(Iterator                               first,
+              Iterator                               last,
+              std::string_view                       replacementField,
+              bool                                   in_map,
+              bool                                   in_list,
+              std::unordered_map<std::uint16_t,
+                                 std::string> const& stringConstantsMap,
+              Parser&                                parser) {
+            auto const symbol
+              = parser.parseFromTypeId(first, last, "{}", false, false, stringConstantsMap);
+            if(!symbol) { return std::nullopt; }
+
+            auto const [padField, valueField] = splitFillAlignWidth(replacementField);
+
+            auto const value = parser.parseFromTypeId(symbol->pos,
+                                                      last,
+                                                      valueField,
+                                                      in_list,
+                                                      in_map,
+                                                      stringConstantsMap);
+            if(!value) { return std::nullopt; }
+
+            auto const text = fmt::format("{}{}", value->str, symbol->str);
+            if(padField == "{}") { return ParseResult_<Iterator>{text, value->pos}; }
+
+            try {
+                return ParseResult_<Iterator>{fmt::format(fmt::runtime(padField), text),
+                                              value->pos};
+            } catch(std::exception const& e) {
+                parser.errorMessagef(
+                  fmt::format("bad format for replacement field {:?}: {} (quantity: \"{}\")",
+                              replacementField,
+                              e.what(),
+                              text));
+                return std::nullopt;
+            }
         }
     };
 
@@ -1287,6 +1404,37 @@ namespace detail {
             };
         }
 
+        /// A sub format string is already text by the time the outer replacement field is seen:
+        /// parseFmt has rendered its literal characters and every one of its arguments. So a
+        /// presentation type that needs a value - ".2f", "#x", "%H" - has nothing left to act on
+        /// and is an error, and pushing it down into the sub string's own fields is no answer
+        /// either, since "{} {}" would apply it to both. Everything fmt accepts on a string,
+        /// though - width, fill, align, precision-as-truncation, "s" - is meaningful and is
+        /// applied here rather than thrown away.
+        ///
+        /// in_list deliberately plays no part: the result is a formatted representation, not a
+        /// string value, so it does not pick up fmt's debug quoting inside a range.
+        template<typename Iterator>
+        ParseResult<Iterator> applyFieldToSubFmtString(std::string_view replacementField,
+                                                       ParseResult_<Iterator> const& rendered) {
+            if(replacementField == Default_replacement_field) { return rendered; }
+
+            try {
+                return ParseResult_<Iterator>{
+                  fmt::format(fmt::runtime(replacementField), rendered.str),
+                  rendered.pos};
+            } catch(std::exception const& e) {
+                errorMessagef(fmt::format(
+                  "bad format for replacement field {:?}: {} - a formatter built on format_to "
+                  "renders to a string on the host, so only a string spec can apply to it "
+                  "(sub format string result: {:?})",
+                  replacementField,
+                  e.what(),
+                  rendered.str));
+                return std::nullopt;
+            }
+        }
+
         // Every recursive path goes through here - list, set and map elements, tuple and bitflag
         // elements, the value inside an optional/expected/variant/styled, and a sub format string's
         // own arguments - so this is the one place the depth has to be counted.
@@ -1309,18 +1457,15 @@ namespace detail {
 
             TypeIdentifier const typeId = static_cast<TypeIdentifier>(*first & std::byte{0x03});
             if(typeId == TypeIdentifier::fmt_string) {
-                if(parseFmtStringTypeIdentifier(*first, FmtStringType::sub)) {
-                    auto const optionalFmtTypeSize
-                      = parseFmtStringTypeIdentifier(*first, FmtStringType::sub);
-                    if(!optionalFmtTypeSize) { return std::nullopt; }
-                    if(replacementField != "{}") { return std::nullopt; }
-                    return parseFmt(first, last, FmtStringType::sub, stringConstantsMap);
-                }
-                auto const optionalFmtTypeSize
-                  = parseFmtStringTypeIdentifier(*first, FmtStringType::cataloged_sub);
-                if(!optionalFmtTypeSize) { return std::nullopt; }
-                if(replacementField != "{}") { return std::nullopt; }
-                return parseFmt(first, last, FmtStringType::cataloged_sub, stringConstantsMap);
+                FmtStringType const subType
+                  = parseFmtStringTypeIdentifier(*first, FmtStringType::sub)
+                    ? FmtStringType::sub
+                    : FmtStringType::cataloged_sub;
+                if(!parseFmtStringTypeIdentifier(*first, subType)) { return std::nullopt; }
+
+                auto const rendered = parseFmt(first, last, subType, stringConstantsMap);
+                if(!rendered) { return std::nullopt; }
+                return applyFieldToSubFmtString(replacementField, *rendered);
             }
             return parseType(first, last, replacementField, in_list, in_map, stringConstantsMap);
         }

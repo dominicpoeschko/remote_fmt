@@ -4,6 +4,7 @@
 #include "type_identifier.hpp"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <chrono>
 #include <concepts>
@@ -23,6 +24,25 @@
 #include <type_traits>
 #include <utility>
 #include <variant>
+
+// mp-units is optional: when the project has it, a quantity and a quantity_point are formattable
+// like any other argument (see the formatters at the bottom of this file). Set the macro to 0 to
+// keep the dependency out even where the headers are reachable.
+#if !defined(REMOTE_FMT_USE_MP_UNITS)
+    #if __has_include(<mp-units/framework/quantity.h>)                                             \
+      && __has_include(<mp-units/framework/quantity_point.h>)                                      \
+      && __has_include(<mp-units/framework/unit.h>)
+        #define REMOTE_FMT_USE_MP_UNITS 1
+    #else
+        #define REMOTE_FMT_USE_MP_UNITS 0
+    #endif
+#endif
+
+#if REMOTE_FMT_USE_MP_UNITS
+    #include <mp-units/framework/quantity.h>
+    #include <mp-units/framework/quantity_point.h>
+    #include <mp-units/framework/unit.h>
+#endif
 
 #if __has_include(<enchantum/enchantum.hpp>)
 
@@ -997,3 +1017,100 @@ public:
 };
 
 }   // namespace remote_fmt
+
+#if REMOTE_FMT_USE_MP_UNITS
+namespace remote_fmt {
+
+namespace detail {
+
+    // The separator is part of the stored symbol, so the host has nothing to decide: it prints
+    // the number and then this. mp-units' own space_before_unit_symbol says whether the unit
+    // takes one -- true for nearly everything, false for the dimensionless `one` and for the
+    // angle units, which is why a ratio does not come out as "5 " nor an angle as "45 deg".
+    // Static storage, so the consteval generator below can hand out a view of it.
+    template<auto U>
+    inline constexpr auto unitSymbolStorage = [] {
+        constexpr auto sym   = mp_units::unit_symbol<mp_units::unit_symbol_formatting{}>(U);
+        constexpr bool space = mp_units::space_before_unit_symbol<U>;
+        std::array<char, sym.size() + (space ? 1 : 0)> out{};
+        std::size_t                                    i = 0;
+        if constexpr(space) { out[i++] = ' '; }
+        for(std::size_t k = 0; k < sym.size(); ++k) { out[i++] = sym[k]; }
+        return out;
+    }();
+
+    /// The unit symbol as a StringConstant, so it reaches the host as a two-byte catalog id
+    /// rather than as characters: one catalog entry per unit, however many values are logged.
+    template<auto U>
+    consteval auto unitSymbolConstant() {
+        return sc::create([] {
+            return std::string_view{unitSymbolStorage<U>.data(), unitSymbolStorage<U>.size()};
+        });
+    }
+
+    // The spec is checked against the representation, which is what it ends up applied to.
+    // host_type itself only exists when the check is enabled, so all of this is guarded.
+    #if REMOTE_FMT_USE_FMT_CHECK
+    /// The quantity a quantity_point is logged as. Not `quantity<R, Rep>`: quantity_from_zero
+    /// restores the point's own unit only when that is non-truncating, and subtracting the origin
+    /// can widen the representation, so the representation has to come from the call rather than
+    /// be assumed.
+    template<typename QP>
+    using quantityFromZero_t
+      = std::remove_cvref_t<decltype(std::declval<QP const&>().quantity_from_zero())>;
+
+    template<auto R, typename Rep>
+    struct host_type<mp_units::quantity<R, Rep>> {
+        using type = host_type_t<Rep>;
+    };
+
+    template<auto R, auto PO, typename Rep>
+    struct host_type<mp_units::quantity_point<R, PO, Rep>> {
+        using type
+          = host_type_t<typename quantityFromZero_t<mp_units::quantity_point<R, PO, Rep>>::rep>;
+    };
+    #endif
+
+}   // namespace detail
+
+/// A quantity goes out as the marker, its unit symbol and its numerical value in that unit.
+/// The value keeps its own representation -- an integral quantity stays integral, so nothing on
+/// the target converts to float merely to log it -- and the parser applies the caller's
+/// replacement field to the number, so "{:.2f}" means what it usually means and the symbol
+/// follows. A sub format string could not do that: it renders to a string before the outer spec
+/// is applied, and ".2f" on a string is an error.
+template<auto R, typename Rep>
+struct formatter<mp_units::quantity<R, Rep>> {
+    template<typename Printer>
+    constexpr auto format(mp_units::quantity<R,
+                                             Rep> const& q,
+                          Printer&                       printer) const {
+        detail::appendExtendedTypeIdentifier<detail::ExtendedTypeIdentifier::quantity>(
+          [&](auto const&... valueArgs) { printer.printHelper(valueArgs...); });
+
+        constexpr auto unit   = mp_units::get_unit(R);
+        auto const     symbol = detail::unitSymbolConstant<unit>();
+        formatter<std::remove_cvref_t<decltype(symbol)>>{}.format(symbol, printer);
+
+        return formatter<Rep>{}.format(q.numerical_value_in(unit), printer);
+    }
+};
+
+/// mp-units gives quantity_point no text output of its own: a point is meaningless without its
+/// origin, so the documented idiom is to write `.quantity_from_zero()` at the call site. Logging
+/// is the case where that ceremony buys nothing, so it happens here -- and it goes on the wire as
+/// an ordinary quantity, which is why this needs no marker of its own.
+template<auto R, auto PO, typename Rep>
+struct formatter<mp_units::quantity_point<R, PO, Rep>> {
+    template<typename Printer>
+    constexpr auto format(mp_units::quantity_point<R,
+                                                   PO,
+                                                   Rep> const& qp,
+                          Printer&                             printer) const {
+        auto const q = qp.quantity_from_zero();
+        return formatter<std::remove_cvref_t<decltype(q)>>{}.format(q, printer);
+    }
+};
+
+}   // namespace remote_fmt
+#endif

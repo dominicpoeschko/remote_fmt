@@ -20,6 +20,11 @@
 #include <unordered_map>
 #include <utility>
 #include <variant>
+
+#if __has_include(<mp-units/systems/si.h>)
+    #include <mp-units/systems/si.h>
+    #define REMOTE_FMT_TEST_MP_UNITS 1
+#endif
 #include <vector>
 
 using namespace sc::literals;
@@ -79,6 +84,28 @@ std::vector<std::byte> rawFrame(std::string_view fmtString,
     auto const unsignedValue = static_cast<std::uint32_t>(value);
     for(unsigned shift = 0; shift < 32U; shift += 8U) {
         buffer.push_back(static_cast<std::byte>((unsignedValue >> shift) & 0xFFU));
+    }
+    buffer.push_back(remote_fmt::protocol::End_marker);
+    return buffer;
+}
+
+// A frame whose single argument is a sub format string of pure literal text, for specs that a
+// rendered sub format string cannot take.
+std::vector<std::byte> rawSubFmtStringFrame(std::string_view fmtString,
+                                            std::string_view subFmtString) {
+    std::vector<std::byte> buffer;
+    buffer.push_back(remote_fmt::protocol::Start_marker);
+    buffer.push_back(
+      remote_fmt::detail::fmtStringTypeIdentifier<remote_fmt::detail::FmtStringType::normal>(
+        remote_fmt::detail::RangeSize::_1));
+    buffer.push_back(static_cast<std::byte>(fmtString.size()));
+    for(char const character : fmtString) { buffer.push_back(static_cast<std::byte>(character)); }
+    buffer.push_back(
+      remote_fmt::detail::fmtStringTypeIdentifier<remote_fmt::detail::FmtStringType::sub>(
+        remote_fmt::detail::RangeSize::_1));
+    buffer.push_back(static_cast<std::byte>(subFmtString.size()));
+    for(char const character : subFmtString) {
+        buffer.push_back(static_cast<std::byte>(character));
     }
     buffer.push_back(remote_fmt::protocol::End_marker);
     return buffer;
@@ -1189,6 +1216,153 @@ void replacementFieldScanRejections() {
 
 }   // namespace
 
+// A formatter built on format_to, the way a small wrapper is usually written (see
+// Kvasir::Suppressed). It renders to a string on the host, so a string spec applies to it and a
+// numeric one cannot -- the host_type below is what turns the latter into a compile error rather
+// than a message that quietly never arrives.
+namespace {
+struct Suppressed {
+    unsigned n;
+};
+}   // namespace
+
+template<>
+struct remote_fmt::formatter<Suppressed> {
+    template<typename Printer>
+    constexpr auto format(Suppressed const& s,
+                          Printer&          printer) const {
+        if(s.n == 0) { return format_to(printer, SC_LIFT("")); }
+        return format_to(printer, SC_LIFT("(+{} not logged)"), s.n);
+    }
+};
+
+#if REMOTE_FMT_USE_FMT_CHECK
+template<>
+struct remote_fmt::detail::host_type<Suppressed> {
+    using type = std::string_view;
+};
+#endif
+
+namespace {
+
+// A sub format string is text by the time the outer field is seen, so a spec that needs a value
+// cannot apply -- but everything fmt accepts on a string can, and used to be thrown away along
+// with the whole message.
+void subFmtStringSpecs() {
+    CHECK_RT("x (+3 not logged)", "x {}"_sc, Suppressed{3});
+    CHECK_RT("x ", "x {}"_sc, Suppressed{0});
+
+    // String specs reach the rendered text.
+    CHECK_RT("|(+3 not logged)     |", "|{:<20}|"_sc, Suppressed{3});
+    CHECK_RT("|     (+3 not logged)|", "|{:>20}|"_sc, Suppressed{3});
+    CHECK_RT("|...(+3 not logged)...|", "|{:.^21}|"_sc, Suppressed{3});
+    CHECK_RT("(+3 n", "{:.5}"_sc, Suppressed{3});
+
+    {
+        // A numeric spec still cannot apply -- but it now says so instead of dropping the message
+        // in silence. Raw frame, because host_type makes "{:.2f}" a compile error at the print
+        // call; the host still has to cope with untrusted bytes.
+        bool       errorReported = false;
+        auto const buffer        = rawSubFmtStringFrame("{:.2f}", "(+3 not logged)");
+        auto const [message, remaining, discarded]
+          = remote_fmt::parse(std::span{buffer}, emptyCatalog(), [&](std::string_view) {
+                errorReported = true;
+            });
+        CHECK(!message, "numeric spec on a sub format string fails");
+        CHECK(errorReported, "numeric spec on a sub format string reports an error");
+    }
+}
+
+// mp-units quantities. The point of the protocol's `quantity` marker rather than a sub format
+// string: the caller's replacement field reaches the *number*, so a spec means what it always
+// means and the unit symbol follows it. Fill, align and width are the exception - those position
+// the number and the unit together.
+void quantityRoundTrips() {
+#ifdef REMOTE_FMT_TEST_MP_UNITS
+    namespace mpu = mp_units;
+    namespace si  = mp_units::si;
+
+    // An integral quantity stays integral on the wire: nothing converts to float to be logged.
+    CHECK_RT(
+      "23500 mK",
+      "{}"_sc,
+      mpu::quantity<si::milli<si::kelvin>, std::int32_t>{mpu::delta<si::milli<si::kelvin>>(23500)});
+    CHECK_RT("-40 K",
+             "{}"_sc,
+             mpu::quantity<si::kelvin, std::int32_t>{mpu::delta<si::kelvin>(-40)});
+
+    // The spec applies to the number, which a sub format string could not do.
+    CHECK_RT("1.50 V", "{:.2f}"_sc, mpu::quantity<si::volt, float>{1.5F * si::volt});
+    CHECK_RT("0x2a lx", "{:#x}"_sc, mpu::quantity<si::lux, std::int32_t>{42 * si::lux});
+
+    // ...but fill, align and width position the whole "1.5 V", the way they would position any
+    // other argument. A bare width right-aligns, because that is what the representation does.
+    CHECK_RT("     1.5 V", "{:10}"_sc, mpu::quantity<si::volt, float>{1.5F * si::volt});
+    CHECK_RT("     1.5 V", "{:>10}"_sc, mpu::quantity<si::volt, float>{1.5F * si::volt});
+    CHECK_RT("1.5 V     ", "{:<10}"_sc, mpu::quantity<si::volt, float>{1.5F * si::volt});
+    CHECK_RT("***1.50 V***", "{:*^12.2f}"_sc, mpu::quantity<si::volt, float>{1.5F * si::volt});
+    // Width below the rendered length changes nothing, so the unit is never truncated away.
+    CHECK_RT("42 lx", "{:4}"_sc, mpu::quantity<si::lux, std::int32_t>{42 * si::lux});
+
+    // The zero flag is left with the number: sign-aware zero padding is a numeric property, and
+    // zero-padding a string that ends in a unit symbol would be nonsense.
+    CHECK_RT("00001.50 V", "{:08.2f}"_sc, mpu::quantity<si::volt, float>{1.5F * si::volt});
+    // '0' followed by an align is a fill, not the zero flag, so this one does pad the whole.
+    CHECK_RT("000001.5 V", "{:0>10}"_sc, mpu::quantity<si::volt, float>{1.5F * si::volt});
+    // A sign stays with the number, where it belongs.
+    CHECK_RT("    +1.5 V", "{:>+10}"_sc, mpu::quantity<si::volt, float>{1.5F * si::volt});
+
+    // A derived unit's symbol comes through whole.
+    CHECK_RT("9 m/s²",
+             "{}"_sc,
+             mpu::quantity<si::metre / (si::second * si::second), std::int32_t>{
+               9 * si::metre / (si::second * si::second)});
+
+    // mp-units' space_before_unit_symbol decides the separator, and it is baked into the stored
+    // symbol. A dimensionless quantity has an empty symbol, so this also covers sc::create and
+    // the catalog on a zero-length string.
+    CHECK_RT("5", "{}"_sc, mpu::quantity<mpu::one, std::int32_t>{5 * mpu::one});
+    CHECK_RT("45°", "{}"_sc, mpu::quantity<si::degree, std::int32_t>{mpu::delta<si::degree>(45)});
+    CHECK_RT("   45°",
+             "{:6}"_sc,
+             mpu::quantity<si::degree, std::int32_t>{mpu::delta<si::degree>(45)});
+
+    // Celsius is an offset unit, so a value is a delta -- which is what a sensor reports.
+    CHECK_RT("2350 c℃",
+             "{}"_sc,
+             mpu::quantity<si::centi<si::degree_Celsius>, std::int32_t>{
+               mpu::delta<si::centi<si::degree_Celsius>>(2350)});
+
+    // A quantity_point logs what quantity_from_zero() yields -- and the unit comes from that
+    // quantity, not from the point's Reference, because quantity_from_zero restores the point's
+    // own unit only when doing so is non-truncating.
+    CHECK_RT("20 ℃", "{}"_sc, mpu::quantity_point{mpu::delta<si::degree_Celsius>(20)});
+    CHECK_RT("293.15 K",
+             "{:.2f}"_sc,
+             mpu::quantity_point{mpu::delta<si::degree_Celsius>(20.0)}.in(si::kelvin));
+    // Padding counts display columns, not bytes: "20 \u2103" is four columns wide even though
+    // the symbol is three bytes.
+    CHECK_RT("     20 ℃", "{:9}"_sc, mpu::quantity_point{mpu::delta<si::degree_Celsius>(20)});
+
+    // Inside the wrappers and inside ranges, like any other argument -- so in_list and in_map
+    // forwarding is covered too.
+    CHECK_RT("optional(5 A)",
+             "{}"_sc,
+             std::optional{mpu::quantity<si::ampere, std::int32_t>{5 * si::ampere}});
+    CHECK_RT("[1 A, 2 A]",
+             "{}"_sc,
+             std::vector{mpu::quantity<si::ampere, std::int32_t>{1 * si::ampere},
+                         mpu::quantity<si::ampere, std::int32_t>{2 * si::ampere}});
+    CHECK_RT("{\"a\": 1 A}",
+             "{}"_sc,
+             std::map<std::string_view, mpu::quantity<si::ampere, std::int32_t>>{
+               {"a", mpu::quantity<si::ampere, std::int32_t>{1 * si::ampere}}
+    });
+#endif
+}
+
+}   // namespace
+
 int main() {
     trivialRoundTrips();
     stringRoundTrips();
@@ -1196,6 +1370,8 @@ int main() {
     tupleRoundTrips();
     extendedTypeRoundTrips();
     timeRoundTrips();
+    subFmtStringSpecs();
+    quantityRoundTrips();
     debugFormatInRanges();
     replacementFieldNumberLimit();
     fmtParityScalars();

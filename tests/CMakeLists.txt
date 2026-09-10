@@ -36,6 +36,41 @@ foreach(dep_target fmt)
     endif()
 endforeach()
 
+# mp-units, so the round-trip tests cover the quantity formatter. Optional: without it the quantity cases compile out
+# (__has_include) and everything else still runs. The parser half needs no mp-units at all -- a quantity reaches the
+# host as a string and a number.
+option(REMOTE_FMT_TESTS_WITH_MP_UNITS "fetch mp-units for the quantity round-trip tests" ON)
+if(REMOTE_FMT_TESTS_WITH_MP_UNITS)
+    set(MP_UNITS_API_CONTRACTS
+        "NONE"
+        CACHE STRING "" FORCE) # otherwise mp-units wants gsl-lite
+    set(MP_UNITS_API_NATURAL_UNITS
+        OFF
+        CACHE BOOL "" FORCE)
+    set(MP_UNITS_BUILD_CXX_MODULES
+        OFF
+        CACHE BOOL "" FORCE)
+    set(MP_UNITS_BUILD_INSTALL
+        OFF
+        CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        mp-units
+        GIT_REPOSITORY https://github.com/mpusz/mp-units.git
+        GIT_TAG v2.5.0
+        GIT_SHALLOW ON
+        SOURCE_SUBDIR src
+        UPDATE_DISCONNECTED ON)
+    FetchContent_MakeAvailable(mp-units)
+    foreach(_t mp-units-core mp-units-systems)
+        if(TARGET ${_t})
+            get_target_property(_dirs ${_t} INTERFACE_INCLUDE_DIRECTORIES)
+            if(_dirs)
+                target_include_directories(${_t} SYSTEM INTERFACE ${_dirs})
+            endif()
+        endif()
+    endforeach()
+endif()
+
 enable_testing()
 
 function(remote_fmt_add_test name)
@@ -48,6 +83,9 @@ endfunction()
 
 remote_fmt_add_test(test_roundtrip roundtrip_tests.cpp)
 target_compile_definitions(test_roundtrip PRIVATE REMOTE_FMT_USE_CATALOG=false)
+if(TARGET mp-units::mp-units)
+    target_link_libraries(test_roundtrip PRIVATE mp-units::mp-units)
+endif()
 
 # The fmt-parity tests instantiate fixed-point specs ("{:.0f}", "{:.1100f}"), and gcc then reports "writing 2 bytes into
 # a region of size 0" inside fmt's own write_fixed/write_padded. It is a false positive - the buffer is sized by a

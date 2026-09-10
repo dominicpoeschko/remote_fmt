@@ -119,6 +119,21 @@ struct host_type<MyWrapper<T>> {
 }}
 ```
 
+A formatter written with `format_to` is the case to watch. It sends a *sub format string*, which
+the host renders to text before the outer field is applied, so only a spec FMT accepts on a string
+can ever reach it - `{:>20}` works, `{:.2f}` cannot. Give such a type
+`using type = std::string_view;` and the difference becomes a compile error at the `print` call
+instead of a diagnostic on the host:
+
+```c++
+namespace remote_fmt { namespace detail {
+template<>
+struct host_type<Suppressed> {
+    using type = std::string_view;   // Suppressed's formatter uses format_to
+};
+}}
+```
+
 Two rules come from the protocol rather than from FMT, which accepts both: an argument index
 (`"{1} {0}"`) and a dynamic width or precision (`"{:{}}"`) are rejected, because each replacement
 field is paired with exactly one argument, in order, and no argument index travels on the wire.
@@ -132,3 +147,41 @@ Knobs, both rarely needed:
   while every other field in the same format string is still checked. Cross builds set this to `1`
   because they apply [fmt.patch](fmt.patch), which makes those two headers respect `FMT_USE_LOCALE`
   and so work on a standard library without localization.
+
+## mp-units
+
+When [mp-units](https://github.com/mpusz/mp-units) is reachable, `mp_units::quantity` and
+`mp_units::quantity_point` are formattable like any other argument - no include or opt-in beyond
+having the library:
+
+```c++
+printer.print("supply {:.2f}"_sc, 3.28F * si::volt);       // supply 3.28 V
+printer.print("ambient {}"_sc, quantity_point{delta<si::degree_Celsius>(21)});  // ambient 21 ℃
+```
+
+A quantity costs the unit symbol *once*: the symbol is computed at compile time and travels as a
+cataloged string, so every value after the first pays two bytes for it. The number keeps its own
+representation - an integral quantity stays integral, and nothing on the device converts to
+floating point merely to be logged.
+
+The replacement field means what it always means, because it is applied to the number on the host:
+`{:.2f}` on a float quantity, `{:#x}` on an integral one. Fill, align and width are the exception -
+those position the number and the unit symbol together, so `{:>10}` right-aligns `1.5 V` as a unit
+rather than padding the number and leaving the symbol past the column. The zero flag stays with the
+number, since `{:08.2f}` asks for sign-aware zero padding and `00001.50 V` is what that means.
+
+Whether a space separates the number from the symbol is mp-units' `space_before_unit_symbol`, so a
+dimensionless ratio prints as `5` and an angle as `45°`. Symbols use mp-units' default character
+set, which is UTF-8: `m/s²`, `Ω`, `℃`.
+
+`mp_units::quantity_point` is logged as its `quantity_from_zero()`. mp-units deliberately gives a
+point no text output of its own - it is meaningless without its origin - so this is a convenience
+this library adds; if the origin matters to the reader, log it too. The unit comes from the
+quantity that call returns rather than from the point's own reference, because `quantity_from_zero`
+restores the point's unit only when doing so is non-truncating.
+
+* `REMOTE_FMT_USE_MP_UNITS` - set to `0` to keep the dependency out even where the headers are
+  reachable. Defaults to on when `mp-units/framework/quantity.h`, `quantity_point.h` and `unit.h`
+  are all reachable.
+
+The host side needs no mp-units at all: a quantity arrives as a string and a number.
