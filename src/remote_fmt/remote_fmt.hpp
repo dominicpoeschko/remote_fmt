@@ -212,6 +212,16 @@ namespace detail {
         return std::ranges::all_of(stringView, isValidChar);
     }
 
+    // Inline strings travel the wire and stay ASCII; a cataloged one never does, so it may hold
+    // UTF-8 (unit symbols) but still no control characters.
+    constexpr bool isValidCatalogedChar(char character) {
+        return static_cast<unsigned char>(character) >= 0x80 || isValidChar(character);
+    }
+
+    constexpr bool allCharsValidCataloged(std::string_view stringView) {
+        return std::ranges::all_of(stringView, isValidCatalogedChar);
+    }
+
     // A replacement field carrying no format spec at all. fmt applies its debug format to strings
     // and chars nested inside a range or tuple only while the spec is absent - an explicit spec
     // replaces it - so the parser has to distinguish this exact field from every other one.
@@ -339,7 +349,8 @@ template<typename... Args,
 consteval void checkFormatString(sc::StringConstant<chars...>) {
     detail::compile_time_assert(
       "invalid chars in format",
-      detail::allCharsValid(std::string_view{sc::StringConstant<chars...>{}}));
+      use_catalog ? detail::allCharsValidCataloged(std::string_view{sc::StringConstant<chars...>{}})
+                  : detail::allCharsValid(std::string_view{sc::StringConstant<chars...>{}}));
     detail::compile_time_assert("invalid replacement field count",
                                 detail::is_arg_count_valid<sizeof...(Args)>(
                                   std::string_view{sc::StringConstant<chars...>{}}));

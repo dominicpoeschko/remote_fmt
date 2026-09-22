@@ -1350,7 +1350,11 @@ namespace detail {
 
             if(!checkReplacementFieldCount(fmtString)) { return std::nullopt; }
 
-            if(!allCharsValid(fmtString)) { return std::nullopt; }
+            // an inline string came over the wire; a cataloged one is the build's own
+            bool const isInline = type == FmtStringType::normal || type == FmtStringType::sub;
+            if(!(isInline ? allCharsValid(fmtString) : allCharsValidCataloged(fmtString))) {
+                return std::nullopt;
+            }
             return {
               {fmtString, iterator}
             };

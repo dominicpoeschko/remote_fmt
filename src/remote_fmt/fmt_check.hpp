@@ -69,17 +69,17 @@
     #include <fmt/ranges.h>
 
     #if REMOTE_FMT_FMT_CHECK_FULL
-        #include <chrono>
-        #include <expected>
         #include <fmt/chrono.h>
         #include <fmt/std.h>
-        #include <optional>
-        #include <variant>
     #endif
 
+    #include <chrono>
+    #include <expected>
     #include <map>
+    #include <optional>
     #include <set>
     #include <tuple>
+    #include <variant>
     #include <vector>
 
     #ifdef __GNUC__
@@ -91,8 +91,8 @@
 
 namespace remote_fmt { namespace detail {
 
-    // For an argument fmt cannot format (a user wrapper, or a type whose formatter is unreachable
-    // here). Swallows any spec, so it holds its place in the field sequence and the rest stay checked.
+    // For an argument whose fmt formatter is unreachable here (see degrades_to_unchecked). Swallows
+    // any spec, so it holds its place in the field sequence and the rest stay checked.
     struct unchecked_arg {};
 
     template<typename T>
@@ -181,12 +181,13 @@ namespace remote_fmt { namespace detail {
         using type = std::set<host_type_t<std::ranges::range_value_t<T>>>;
     };
 
-    #if REMOTE_FMT_FMT_CHECK_FULL
+    // In both modes: since C++26 an optional is a range too, and must not map to a vector.
     template<typename T>
     struct host_type<std::optional<T>> {
         using type = std::optional<host_type_t<T>>;
     };
 
+    #if REMOTE_FMT_FMT_CHECK_FULL
     // Primary handles expected<void, E>: host_type_t<void> would be ill-formed.
     template<typename T, typename E>
     struct host_type<std::expected<T, E>> {
@@ -257,16 +258,86 @@ struct fmt::formatter<remote_fmt::detail::unchecked_arg> {
 
 namespace remote_fmt { namespace detail {
 
-    // Falls back rather than failing: remote_fmt can serialize this argument, we just cannot check
-    // its spec.
+    // Without REMOTE_FMT_FMT_CHECK_FULL fmt cannot format these, so their spec stays unchecked.
     template<typename T>
-    using checkable_t = std::
-      conditional_t<fmt::is_formattable<host_type_t<T>>::value, host_type_t<T>, unchecked_arg>;
+    inline constexpr bool degrades_to_unchecked = false;
+
+    #if !REMOTE_FMT_FMT_CHECK_FULL
+    template<typename Rep, typename Period>
+    inline constexpr bool degrades_to_unchecked<std::chrono::duration<Rep, Period>> = true;
+    template<typename Clock, typename Duration>
+    inline constexpr bool degrades_to_unchecked<std::chrono::time_point<Clock, Duration>> = true;
+    template<typename T>
+    inline constexpr bool degrades_to_unchecked<std::optional<T>> = true;
+    template<typename T, typename E>
+    inline constexpr bool degrades_to_unchecked<std::expected<T, E>> = true;
+    template<typename... Ts>
+    inline constexpr bool degrades_to_unchecked<std::variant<Ts...>> = true;
+    #endif
+
+    // Anything else has its own remote_fmt::formatter, a sub format string the host renders to text
+    // before applying the spec (applyFieldToSubFmtString): check the spec as a string's. A formatter
+    // that forwards to another type (uc_log::Metric) specializes host_type instead.
+    template<typename H>
+    struct checkable {
+        using type = std::conditional_t<
+          fmt::is_formattable<H>::value,
+          H,
+          std::conditional_t<degrades_to_unchecked<H>, unchecked_arg, std::string_view>>;
+    };
+
+    template<typename H>
+    using checkable_host_t = typename checkable<H>::type;
+
+    // Element by element, so a container of such types still has its own spec checked.
+    template<typename T>
+    struct checkable<std::vector<T>> {
+        using type = std::vector<checkable_host_t<T>>;
+    };
 
     template<typename T>
-    using checkable_alt_t = std::conditional_t<fmt::is_formattable<host_type_alt_t<T>>::value,
-                                               host_type_alt_t<T>,
-                                               unchecked_arg>;
+    struct checkable<std::set<T>> {
+        using type = std::set<checkable_host_t<T>>;
+    };
+
+    template<typename K, typename V>
+    struct checkable<std::map<K, V>> {
+        using type = std::map<checkable_host_t<K>, checkable_host_t<V>>;
+    };
+
+    template<typename... Ts>
+    struct checkable<std::tuple<Ts...>> {
+        using type = std::tuple<checkable_host_t<Ts>...>;
+    };
+
+    #if REMOTE_FMT_FMT_CHECK_FULL
+    template<typename T>
+    struct checkable<std::optional<T>> {
+        using type = std::optional<checkable_host_t<T>>;
+    };
+
+    template<typename T, typename E>
+    struct checkable<std::expected<T, E>> {
+        using type = std::expected<T, checkable_host_t<E>>;
+    };
+
+    template<typename T, typename E>
+        requires(!std::is_void_v<T>)
+    struct checkable<std::expected<T, E>> {
+        using type = std::expected<checkable_host_t<T>, checkable_host_t<E>>;
+    };
+
+    template<typename... Ts>
+    struct checkable<std::variant<Ts...>> {
+        using type = std::variant<checkable_host_t<Ts>...>;
+    };
+    #endif
+
+    template<typename T>
+    using checkable_t = checkable_host_t<host_type_t<T>>;
+
+    template<typename T>
+    using checkable_alt_t = checkable_host_t<host_type_alt_t<T>>;
 
     template<typename... Args,
              char... chars>

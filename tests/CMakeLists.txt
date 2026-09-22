@@ -103,6 +103,17 @@ endif()
 
 remote_fmt_add_test(test_catalog catalog_tests.cpp)
 
+# tools/generate_string_constants.py, end to end with this build's compiler and nm
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME test_generate_string_constants COMMAND ${Python3_EXECUTABLE}
+                                                     ${CMAKE_CURRENT_SOURCE_DIR}/test_generate_string_constants.py -v)
+set_tests_properties(
+    test_generate_string_constants
+    PROPERTIES
+        ENVIRONMENT
+        "PYTHONDONTWRITEBYTECODE=1;RF_TEST_CXX=${CMAKE_CXX_COMPILER};RF_TEST_NM=${CMAKE_NM};RF_TEST_INCLUDES=${CMAKE_CURRENT_SOURCE_DIR}/../src:${CMAKE_CURRENT_SOURCE_DIR}/../string_constant/src"
+)
+
 remote_fmt_add_test(test_fmt_check fmt_check_tests.cpp)
 target_compile_definitions(test_fmt_check PRIVATE REMOTE_FMT_USE_CATALOG=false)
 
@@ -121,7 +132,10 @@ set(fmt_check_fail_cases
     10
     11
     12
-    13)
+    13
+    14
+    15
+    16)
 
 foreach(fail_case IN LISTS fmt_check_fail_cases)
     add_executable(fmt_check_fail_${fail_case} EXCLUDE_FROM_ALL fmt_check_fail.cpp)

@@ -12,7 +12,11 @@
 
 using namespace sc::literals;
 
-namespace { enum class Color : std::uint8_t { Red, Blue }; }
+namespace {
+enum class Color : std::uint8_t { Red, Blue };
+
+struct OnlyRemoteFmt {};
+}   // namespace
 
 void failCase();
 
@@ -75,6 +79,18 @@ void failCase() {
     #else
         #error "case 13 needs the full check (fmt/std.h); not applicable here"
     #endif
+
+#elif REMOTE_FMT_FAIL_CASE == 14
+    // a type with only a remote_fmt::formatter is text by the time the host applies the spec
+    remote_fmt::checkFormatString<OnlyRemoteFmt>("{:#06x}"_sc);
+
+#elif REMOTE_FMT_FAIL_CASE == 15
+    // ... and so is each element of a container of it
+    remote_fmt::checkFormatString<std::vector<OnlyRemoteFmt>>("{::#06x}"_sc);
+
+#elif REMOTE_FMT_FAIL_CASE == 16
+    // an element fmt cannot check leaves the range's own spec checked
+    remote_fmt::checkFormatString<std::vector<std::chrono::milliseconds>>("{:x}"_sc);
 
 #else
     #error "REMOTE_FMT_FAIL_CASE must name a case defined in this file"

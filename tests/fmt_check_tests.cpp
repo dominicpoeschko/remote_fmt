@@ -192,12 +192,40 @@ static_assert(maps_to<std::chrono::sys_time<std::chrono::milliseconds>,
                       std::chrono::milliseconds>);
     #endif
 
-// A type fmt knows nothing about degrades instead of breaking the build - this is what keeps user
-// wrappers such as uc_log::Metric working.
+// In both modes: a C++26 optional is also a range, which must not win.
+static_assert(maps_to<std::optional<int>,
+                      std::optional<int>>);
+
+// A type with only a remote_fmt::formatter is text on the host, so its spec is a string's.
 struct OnlyRemoteFmt {};
 
 static_assert(std::is_same_v<detail::checkable_t<OnlyRemoteFmt>,
+                             std::string_view>);
+static_assert(std::is_same_v<detail::checkable_t<OnlyRemoteFmt const&>,
+                             std::string_view>);
+    #if !REMOTE_FMT_FMT_CHECK_FULL
+// remote_fmt's own types whose fmt formatter is out of reach stay unchecked.
+static_assert(std::is_same_v<detail::checkable_t<std::optional<int>>,
                              detail::unchecked_arg>);
+static_assert(std::is_same_v<detail::checkable_t<std::chrono::milliseconds>,
+                             detail::unchecked_arg>);
+// Inside a container only the element is, the container's own spec is still checked.
+static_assert(std::is_same_v<detail::checkable_t<std::vector<std::optional<int>>>,
+                             std::vector<detail::unchecked_arg>>);
+static_assert(std::is_same_v<detail::checkable_t<std::tuple<std::chrono::milliseconds,
+                                                            int>>,
+                             std::tuple<detail::unchecked_arg,
+                                        int>>);
+static_assert(std::is_same_v<detail::checkable_t<std::map<int,
+                                                          std::chrono::seconds>>,
+                             std::map<int,
+                                      detail::unchecked_arg>>);
+    #endif
+static_assert(std::is_same_v<detail::checkable_t<std::array<OnlyRemoteFmt,
+                                                            2>>,
+                             std::vector<std::string_view>>);
+static_assert(std::is_same_v<detail::checkable_t<std::set<OnlyRemoteFmt>>,
+                             std::set<std::string_view>>);
 static_assert(std::is_same_v<detail::checkable_t<int>,
                              int>);
 
@@ -223,6 +251,8 @@ void acceptedFormatStrings() {
     remote_fmt::checkFormatString<char const(&)[3]>("{:*^7}"_sc);
     remote_fmt::checkFormatString<Color>("{:>8}"_sc);
     remote_fmt::checkFormatString<std::byte>("{:#x}"_sc);
+    remote_fmt::checkFormatString<OnlyRemoteFmt>("{}"_sc);
+    remote_fmt::checkFormatString<OnlyRemoteFmt>("{:>20}"_sc);
 
     remote_fmt::checkFormatString<std::vector<int>>("{}"_sc);
     remote_fmt::checkFormatString<std::vector<int>>("{::>5}"_sc);
@@ -232,6 +262,11 @@ void acceptedFormatStrings() {
     remote_fmt::checkFormatString<std::map<int, int>>("{::}"_sc);
     remote_fmt::checkFormatString<std::set<int>>("{}"_sc);
     remote_fmt::checkFormatString<std::tuple<int, char, std::string_view>>("{}"_sc);
+    remote_fmt::checkFormatString<std::vector<OnlyRemoteFmt>>("{::>8}"_sc);
+    remote_fmt::checkFormatString<std::tuple<OnlyRemoteFmt, int>>("{:n}"_sc);
+    remote_fmt::checkFormatString<std::vector<std::chrono::milliseconds>>("{::%Q}"_sc);
+    remote_fmt::checkFormatString<std::vector<std::chrono::milliseconds>>("{:n:%Q}"_sc);
+    remote_fmt::checkFormatString<std::map<int, std::chrono::seconds>>("{}"_sc);
 
     // literal text containing digits must not trip the number limit
     remote_fmt::checkFormatString<bool, float, unsigned>(
