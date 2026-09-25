@@ -97,8 +97,8 @@ class KeyTests(unittest.TestCase):
 class HashTests(unittest.TestCase):
     # FNV-1a 32 of "" is its offset basis, of "a" 0xE40C292C (the published test vectors)
     def test_known_vectors(self):
-        self.assertEqual(gen.preferred_id(b""), 0x811C ^ 0x9DC5)
-        self.assertEqual(gen.preferred_id(b"a"), 0xE40C ^ 0x292C)
+        self.assertEqual(gen.preferred_id(b""), (0x811C ^ 0x9DC5) & 0x7FFF)
+        self.assertEqual(gen.preferred_id(b"a"), (0xE40C ^ 0x292C) & 0x7FFF)
 
     def test_range(self):
         for i in range(1000):

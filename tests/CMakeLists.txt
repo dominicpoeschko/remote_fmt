@@ -102,6 +102,9 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 
 remote_fmt_add_test(test_catalog catalog_tests.cpp)
+set(remote_fmt_test_catalog_json "${CMAKE_CURRENT_BINARY_DIR}/test_catalog_string_constants.json")
+target_generate_string_constants(test_catalog)
+target_compile_definitions(test_catalog PRIVATE REMOTE_FMT_TEST_CATALOG_JSON="${remote_fmt_test_catalog_json}")
 
 # tools/generate_string_constants.py, end to end with this build's compiler and nm
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -112,6 +115,14 @@ set_tests_properties(
     PROPERTIES
         ENVIRONMENT
         "PYTHONDONTWRITEBYTECODE=1;RF_TEST_CXX=${CMAKE_CXX_COMPILER};RF_TEST_NM=${CMAKE_NM};RF_TEST_INCLUDES=${CMAKE_CURRENT_SOURCE_DIR}/../src:${CMAKE_CURRENT_SOURCE_DIR}/../string_constant/src"
+)
+
+add_test(NAME test_extract_sites COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_extract_sites.py -v)
+set_tests_properties(
+    test_extract_sites
+    PROPERTIES
+        ENVIRONMENT
+        "PYTHONDONTWRITEBYTECODE=1;RF_TEST_INCLUDES=${CMAKE_CURRENT_SOURCE_DIR}/../src:${CMAKE_CURRENT_SOURCE_DIR}/../string_constant/src"
 )
 
 remote_fmt_add_test(test_fmt_check fmt_check_tests.cpp)

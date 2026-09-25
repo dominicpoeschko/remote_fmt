@@ -1476,14 +1476,18 @@ namespace detail {
     };
 }   // namespace detail
 
+struct ParsedMessage {
+    std::optional<std::string> message;
+    std::span<std::byte const> remaining;
+    std::size_t                discarded{};
+    std::optional<catalog_id>  catalogId;
+};
+
 template<typename ErrorMessageF>
-inline std::tuple<std::optional<std::string>,
-                  std::span<std::byte const>,
-                  std::size_t>
-parse(std::span<std::byte const>             buffer,
-      std::unordered_map<std::uint16_t,
-                         std::string> const& stringConstantsMap,
-      ErrorMessageF&&                        errorMessagef) {
+inline ParsedMessage parseMessage(std::span<std::byte const>             buffer,
+                                  std::unordered_map<std::uint16_t,
+                                                     std::string> const& stringConstantsMap,
+                                  ErrorMessageF&&                        errorMessagef) {
     std::size_t unparsed_bytes{};
     while(!buffer.empty()) {
         auto const        iterator = std::ranges::find(buffer, protocol::Start_marker);
@@ -1504,7 +1508,7 @@ parse(std::span<std::byte const>             buffer,
 
     bool const contains_end = std::ranges::find(buffer, protocol::End_marker) != buffer.end();
 
-    if(2 > buffer.size() || !contains_end) { return {std::nullopt, buffer, unparsed_bytes}; }
+    if(2 > buffer.size() || !contains_end) { return {std::nullopt, buffer, unparsed_bytes, {}}; }
 
     detail::FmtStringType const fmtStringType = [&]() {
         if(detail::parseFmtStringTypeIdentifier(buffer[1], detail::FmtStringType::normal)) {
@@ -1517,12 +1521,35 @@ parse(std::span<std::byte const>             buffer,
     auto const     optionalStr
       = parser.parseFmt(std::next(buffer.begin()), buffer.end(), fmtStringType, stringConstantsMap);
 
-    if(!optionalStr) { return {std::nullopt, buffer, unparsed_bytes}; }
+    if(!optionalStr) { return {std::nullopt, buffer, unparsed_bytes, {}}; }
     if(optionalStr->pos == buffer.end() || *optionalStr->pos != protocol::End_marker) {
-        return {std::nullopt, buffer, unparsed_bytes};
+        return {std::nullopt, buffer, unparsed_bytes, {}};
     }
+
+    std::optional<catalog_id> id;
+    if(fmtStringType == detail::FmtStringType::cataloged_normal) {
+        auto const rangeSize = detail::parseFmtStringTypeIdentifier(buffer[1], fmtStringType);
+        auto const size      = parser.extractSize(std::next(buffer.begin(), 2),
+                                                  buffer.end(),
+                                                  detail::rangeSizeToTypeSize(*rangeSize));
+        id                   = static_cast<catalog_id>(size->first);
+    }
+
     buffer = buffer.subspan(
       static_cast<std::size_t>(std::distance(buffer.begin(), optionalStr->pos + 1)));
-    return {optionalStr->str, buffer, unparsed_bytes};
+    return {optionalStr->str, buffer, unparsed_bytes, id};
+}
+
+template<typename ErrorMessageF>
+inline std::tuple<std::optional<std::string>,
+                  std::span<std::byte const>,
+                  std::size_t>
+parse(std::span<std::byte const>             buffer,
+      std::unordered_map<std::uint16_t,
+                         std::string> const& stringConstantsMap,
+      ErrorMessageF&&                        errorMessagef) {
+    auto result
+      = parseMessage(buffer, stringConstantsMap, std::forward<ErrorMessageF>(errorMessagef));
+    return {std::move(result.message), result.remaining, result.discarded};
 }
 }   // namespace remote_fmt

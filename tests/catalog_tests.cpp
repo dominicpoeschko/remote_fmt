@@ -1,15 +1,17 @@
 // Tests for the catalog mode (use_catalog == true, the default): format strings and
-// StringConstant arguments are transmitted as 16 bit ids and resolved through the
-// string constants map on the parser side. The catalog<>() specializations that the
-// toolchain normally generates are written by hand here, like in examples/catalog.cpp.
+// StringConstant arguments are transmitted as 16 bit ids and resolved through the string
+// constants map on the parser side, which is checked against the json the build wrote.
 #include "remote_fmt/catalog.hpp"
 
+#include "remote_fmt/catalog_helpers.hpp"
 #include "remote_fmt/parser.hpp"
 #include "remote_fmt/remote_fmt.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -19,20 +21,13 @@
 
 using namespace sc::literals;
 
+// catalog<>() is defined by the generated catalog
+#ifdef __clang__
+    #pragma clang diagnostic ignored "-Wundefined-func-template"
+#endif
+
 static constexpr auto fmtString{"Test {}"_sc};
 static constexpr auto argString{"hello"_sc};
-
-template<>
-std::uint16_t remote_fmt::catalog<std::remove_cvref_t<decltype(fmtString)>>() {
-    return 0;
-}
-
-// Arguments are cataloged through their formatter, which instantiates catalog<>() with
-// a const& qualified type - specialize for exactly that.
-template<>
-std::uint16_t remote_fmt::catalog<std::remove_cvref_t<decltype(argString)> const&>() {
-    return 1;
-}
 
 // A bitflag enum. test_roundtrip covers the rendering, but it builds with the catalog OFF, so the
 // combined-value path is only exercised here: each set flag's name is its own StringConstant and
@@ -66,19 +61,9 @@ static constexpr auto bitflagFmtString{"Perm {}"_sc};
 static constexpr auto readName{sc::create([]() { return enchantum::to_string(Perm::read); })};
 static constexpr auto writeName{sc::create([]() { return enchantum::to_string(Perm::write); })};
 
-template<>
-std::uint16_t remote_fmt::catalog<std::remove_cvref_t<decltype(bitflagFmtString)>>() {
-    return 2;
-}
-
-template<>
-std::uint16_t remote_fmt::catalog<std::remove_cvref_t<decltype(readName)> const&>() {
-    return 3;
-}
-
-template<>
-std::uint16_t remote_fmt::catalog<std::remove_cvref_t<decltype(writeName)> const&>() {
-    return 4;
+template<typename T>
+remote_fmt::catalog_id idOf(T const&) {
+    return remote_fmt::catalog<T>();
 }
 
 namespace {
@@ -106,13 +91,19 @@ std::unordered_map<std::uint16_t,
                    std::string> const&
 stringConstantsMap() {
     static auto const& map = *new std::unordered_map<std::uint16_t, std::string>{
-      {0,        std::string{std::string_view{fmtString}}},
-      {1,        std::string{std::string_view{argString}}},
-      {2, std::string{std::string_view{bitflagFmtString}}},
-      {3,         std::string{std::string_view{readName}}},
-      {4,        std::string{std::string_view{writeName}}}
+      {       idOf(fmtString),        std::string{std::string_view{fmtString}}},
+      {       idOf(argString),        std::string{std::string_view{argString}}},
+      {idOf(bitflagFmtString), std::string{std::string_view{bitflagFmtString}}},
+      {        idOf(readName),         std::string{std::string_view{readName}}},
+      {       idOf(writeName),        std::string{std::string_view{writeName}}}
     };
     return map;
+}
+
+remote_fmt::catalog_id printAtSite(remote_fmt::Printer<VectorBackend>& printer) {
+    auto const site = REMOTE_FMT_SITE();
+    printer.print(remote_fmt::SiteId{site(fmtString)}, fmtString, 7);
+    return site(fmtString);
 }
 
 }   // namespace
@@ -175,7 +166,7 @@ int main() {
         auto const& buffer = printer.get_com_backend().memory;
 
         auto partialMap = stringConstantsMap();
-        partialMap.erase(4);
+        partialMap.erase(idOf(writeName));
 
         bool errorReported = false;
         auto const [message, remaining, discarded]
@@ -184,6 +175,51 @@ int main() {
             });
         CHECK(!message, "bitflag with an unknown name produces no message");
         CHECK(errorReported, "bitflag with an unknown name reports an error");
+    }
+
+    {
+        CHECK(idOf(fmtString) != idOf(argString) && idOf(readName) != idOf(writeName),
+              "one tag per string");
+        CHECK(remote_fmt::catalog<decltype(fmtString) const&>() == idOf(fmtString),
+              "const& asks for the same tag");
+    }
+
+    auto const written = remote_fmt::parseStringConstantsFromJsonFile(REMOTE_FMT_TEST_CATALOG_JSON);
+    CHECK(written.has_value(), "the catalog json reads");
+    if(written) {
+        for(auto const& [id, text] : stringConstantsMap()) {
+            auto const it = written->find(id);
+            CHECK(it != written->end() && it->second == text,
+                  "the json has every string at its id");
+        }
+    }
+
+    {
+        remote_fmt::Printer<VectorBackend> printer{};
+        auto const                         site   = printAtSite(printer);
+        auto const&                        buffer = printer.get_com_backend().memory;
+        CHECK(site != idOf(fmtString), "a site has an id of its own");
+
+        auto map  = stringConstantsMap();
+        map[site] = std::string{std::string_view{fmtString}};
+        auto const parsed
+          = remote_fmt::parseMessage(std::span{buffer}, map, [](std::string_view) {});
+        CHECK(parsed.message == std::optional<std::string>{"Test 7"}, "a site's line resolves");
+        CHECK(parsed.catalogId == std::optional<remote_fmt::catalog_id>{site},
+              "parseMessage hands back the site's id");
+
+        std::ifstream stream{REMOTE_FMT_TEST_CATALOG_JSON};
+        auto const    json  = nlohmann::json::parse(stream);
+        auto const    sites = json.at("Sites");
+        auto const    key   = std::to_string(static_cast<unsigned>(site));
+        CHECK(sites.contains(key)
+                && sites.at(key).get<std::string>().find("printAtSite") != std::string::npos,
+              "the json names the site's function");
+        if(written) {
+            auto const it = written->find(site);
+            CHECK(it != written->end() && it->second == "Test {}",
+                  "the json has the site's string");
+        }
     }
 
     if(failures != 0) {

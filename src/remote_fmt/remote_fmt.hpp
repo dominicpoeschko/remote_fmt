@@ -134,6 +134,17 @@ static constexpr bool use_catalog = true;
 static constexpr bool use_catalog{REMOTE_FMT_USE_CATALOG};
 #endif
 
+// An integer goes out in the smallest width that holds its value (the type byte names the width).
+#ifndef REMOTE_FMT_COMPACT_INTEGERS
+    #define REMOTE_FMT_COMPACT_INTEGERS 1
+#endif
+
+// A message is gathered in this many bytes on the stack and handed to the backend in one write;
+// more is written in pieces. 0 writes every field on its own.
+#ifndef REMOTE_FMT_STAGING_BYTES
+    #define REMOTE_FMT_STAGING_BYTES 32
+#endif
+
 namespace detail {
 
     template<FmtStringType T>
@@ -365,26 +376,64 @@ struct formatter;
 
 template<std::integral T>
 struct formatter<T> {
+private:
+    static_assert(8 >= sizeof(T),
+                  "bad type: no [u]int128_t");
+    static_assert(1 == sizeof(char),
+                  "bad type: only 1 byte char");
+
+    static constexpr auto trivialType = []() constexpr {
+        if constexpr(std::is_same_v<bool, T>) {
+            return detail::TrivialType::boolean;
+        } else if constexpr(std::is_same_v<char, T>) {
+            return detail::TrivialType::character;
+        } else if constexpr(std::is_signed_v<T>) {
+            return detail::TrivialType::signed_;
+        } else {
+            return detail::TrivialType::unsigned_;
+        }
+    }();
+    static constexpr auto typeIdentifier
+      = detail::trivialTypeIdentifier<trivialType, detail::typeToTypeSize<T>()>();
+
+public:
+    // at the width of T: a compact range sends its first element this way and the rest raw
+    template<typename Printer>
+    constexpr auto formatFixed(T const& value,
+                               Printer& printer) const {
+        printer.printHelper(typeIdentifier, value);
+    }
+
     template<typename Printer>
     constexpr auto format(T const& value,
                           Printer& printer) const {
-        static_assert(8 >= sizeof(value), "bad type: no [u]int128_t");
-        static_assert(1 == sizeof(char), "bad type: only 1 byte char");
-
-        constexpr auto typeSize    = detail::typeToTypeSize<T>();
-        constexpr auto trivialType = []() constexpr {
-            if constexpr(std::is_same_v<bool, T>) {
-                return detail::TrivialType::boolean;
-            } else if constexpr(std::is_same_v<char, T>) {
-                return detail::TrivialType::character;
-            } else if constexpr(std::is_signed_v<T>) {
-                return detail::TrivialType::signed_;
-            } else {
-                return detail::TrivialType::unsigned_;
+        if constexpr(REMOTE_FMT_COMPACT_INTEGERS
+                     && (trivialType == detail::TrivialType::signed_
+                         || trivialType == detail::TrivialType::unsigned_)
+                     && sizeof(T) > 1)
+        {
+            // the smallest width that holds the value: the type byte names it, the host widens
+            // it back, and the text is the same
+            using Narrow = std::conditional_t<std::is_signed_v<T>, std::int8_t, std::uint8_t>;
+            using Half   = std::conditional_t<std::is_signed_v<T>, std::int16_t, std::uint16_t>;
+            using Word   = std::conditional_t<std::is_signed_v<T>, std::int32_t, std::uint32_t>;
+            auto const narrowed = [&]<typename N>() {
+                if constexpr(sizeof(N) < sizeof(T)) {
+                    if(std::in_range<N>(value)) {
+                        printer.printHelper(
+                          detail::trivialTypeIdentifier<trivialType, detail::typeToTypeSize<N>()>(),
+                          static_cast<N>(value));
+                        return true;
+                    }
+                }
+                return false;
+            };
+            if(narrowed.template operator()<Narrow>() || narrowed.template operator()<Half>()
+               || narrowed.template operator()<Word>())
+            {
+                return;
             }
-        }();
-        constexpr auto typeIdentifier = detail::trivialTypeIdentifier<trivialType, typeSize>();
-
+        }
         printer.printHelper(typeIdentifier, value);
     }
 };
@@ -663,6 +712,18 @@ public:
 template<detail::is_range_but_not_string_like T>
 struct formatter<T> {
 private:
+    // a compact range's first element carries the type byte for all of them: its full width
+    template<typename V,
+             typename Printer>
+    static constexpr void formatFirst(V const& value,
+                                      Printer& printer) {
+        if constexpr(requires { formatter<V>{}.formatFixed(value, printer); }) {
+            formatter<V>{}.formatFixed(value, printer);
+        } else {
+            formatter<V>{}.format(value, printer);
+        }
+    }
+
     template<typename R,
              typename Printer>
     static constexpr void formatImpl(R&          range,
@@ -700,14 +761,14 @@ private:
         if constexpr(is_trivial_formatable) {
             if constexpr(is_contiguous) {
                 if(size != 0) {
-                    formatter<value_t>{}.format(*std::ranges::begin(range), printer);
+                    formatFirst(*std::ranges::begin(range), printer);
                     printer.lowprint(std::span{range}.subspan(1));
                 }
             } else {
                 for(bool first = true; auto const& element : range) {
                     if(first) {
                         first = false;
-                        formatter<value_t>{}.format(element, printer);
+                        formatFirst(element, printer);
                     } else {
                         printer.printHelper(element);
                     }
@@ -888,13 +949,43 @@ static constexpr auto format_to(Printer&                     printer,
 template<typename ComBackend>
 struct Printer {
 private:
+    static constexpr std::size_t StagingBytes = REMOTE_FMT_STAGING_BYTES;
+
     template<std::size_t Extent = std::dynamic_extent>
-    void constexpr lowprint(std::span<std::byte const,
-                                      Extent> span) {
+    void constexpr write(std::span<std::byte const,
+                                   Extent> span) {
         if constexpr(requires { ComBackend::write(span); }) {
             ComBackend::write(span);
         } else {
             comBackend.write(span);
+        }
+    }
+
+    constexpr void flush() {
+        if constexpr(StagingBytes != 0) {
+            if(staged != 0) {
+                write(std::span<std::byte const>{staging}.first(staged));
+                staged = 0;
+            }
+        }
+    }
+
+    template<std::size_t Extent = std::dynamic_extent>
+    void constexpr lowprint(std::span<std::byte const,
+                                      Extent> span) {
+        if constexpr(StagingBytes == 0) {
+            write(span);
+        } else {
+            if(span.size() > StagingBytes - staged) {
+                flush();
+                if(span.size() > StagingBytes) {
+                    write(span);
+                    return;
+                }
+            }
+            std::ranges::copy(span,
+                              std::next(staging.begin(), static_cast<std::ptrdiff_t>(staged)));
+            staged += span.size();
         }
     }
 
@@ -911,17 +1002,45 @@ private:
         (printHelper(std::forward<decltype(values)>(values)), ...);
     }
 
-    constexpr void printHelper(bool value) {
-        std::byte const data{value};
-        lowprint(std::span<std::byte const, 1>{&data, std::size_t{1}});
+    // one field of 1, 2, 4 or 8 bytes: out of line and passed in a register, so a field costs a
+    // call at its formatter and nothing is copied through the stack
+    template<std::unsigned_integral U>
+    [[gnu::noinline]] constexpr void append(U const value) {
+        auto const bytes = std::bit_cast<std::array<std::byte, sizeof(U)>>(value);
+        if constexpr(StagingBytes == 0) {
+            write(std::span<std::byte const, sizeof(U)>{bytes});
+        } else {
+            static_assert(StagingBytes >= sizeof(std::uint64_t),
+                          "a field must fit the staging bytes");
+            if(StagingBytes - staged < sizeof(U)) { flush(); }
+            std::ranges::copy(bytes,
+                              std::next(staging.begin(), static_cast<std::ptrdiff_t>(staged)));
+            staged += sizeof(U);
+        }
     }
+
+    template<typename Type>
+    using FieldBits = std::conditional_t<
+      sizeof(Type) == 1,
+      std::uint8_t,
+      std::conditional_t<sizeof(Type) == 2,
+                         std::uint16_t,
+                         std::conditional_t<sizeof(Type) == 4, std::uint32_t, std::uint64_t>>>;
+
+    constexpr void printHelper(bool value) { append(static_cast<std::uint8_t>(value ? 1 : 0)); }
 
     template<typename Type>
         requires(std::is_trivially_copyable_v<Type>
                  && !std::is_same_v<Type,
                                     bool>)
     constexpr void printHelper(Type const& value) {
-        lowprint(std::span<Type const, 1>{std::addressof(value), 1});
+        if constexpr(sizeof(Type) == 1 || sizeof(Type) == 2 || sizeof(Type) == 4
+                     || sizeof(Type) == 8)
+        {
+            append(std::bit_cast<FieldBits<Type>>(value));
+        } else {
+            lowprint(std::span<Type const, 1>{std::addressof(value), 1});
+        }
     }
 
     template<typename T>
@@ -976,6 +1095,10 @@ private:
     }
 
     [[no_unique_address]] ComBackend comBackend{};
+    // Default-initialized (`Printer printer;`, not `Printer{}`): only staged bytes are read, and
+    // zeroing them would cost a memclr per message.
+    std::array<std::byte, StagingBytes> staging;
+    std::size_t                         staged{};
 
 public:
     constexpr Printer() = default;
@@ -993,19 +1116,80 @@ public:
              typename... Args>
     constexpr void print(sc::StringConstant<chars...> fmt,
                          Args&&... args) {
+        printAt(NoSite{}, fmt, std::forward<Args>(args)...);
+    }
+
+    template<char... chars,
+             typename... Args>
+    constexpr void print(SiteId                       site,
+                         sc::StringConstant<chars...> fmt,
+                         Args&&... args) {
+        printAt(site, fmt, std::forward<Args>(args)...);
+    }
+
+private:
+    struct NoSite {};
+
+    // with a SiteId the string never instantiates catalog<>, so it gets no generated id
+    template<typename Site,
+             char... chars,
+             typename... Args>
+    constexpr void printAt([[maybe_unused]] Site        site,
+                           sc::StringConstant<chars...> fmt,
+                           Args&&... args) {
         checkFormatString<decltype(args)...>(fmt);
 
+        constexpr auto ft = detail::maybeCataloged<detail::FmtStringType::cataloged_normal>();
+        if constexpr(ft == detail::FmtStringType::cataloged_normal) {
+            // the string is only its id at run time: one body per argument list, not per string
+#ifdef __clang__
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wundefined-func-template"
+#endif
+            catalog_id id{};
+            if constexpr(std::is_same_v<Site, SiteId>) {
+                id = site.id;
+            } else {
+                id = catalog<decltype(fmt)>();
+            }
+#ifdef __clang__
+    #pragma clang diagnostic pop
+#endif
+            printCataloged(id, std::forward<Args>(args)...);
+        } else {
+            beginRecord();
+            format<ft>(fmt, std::forward<Args>(args)...);
+            endRecord();
+        }
+    }
+
+    template<typename... Args>
+    constexpr void printCataloged(catalog_id const id,
+                                  Args&&... args) {
+        auto constexpr rangeSize
+          = detail::sizeToRangeSize(std::numeric_limits<std::uint16_t>::max());
+        auto constexpr typeId
+          = detail::fmtStringTypeIdentifier<detail::FmtStringType::cataloged_normal>(rangeSize);
+
+        beginRecord();
+        printHelper(typeId);
+        appendSized(rangeSize, id, [&](auto const&... valueArgs) { printHelper(valueArgs...); });
+        (formatter<std::remove_cvref_t<Args>>{}.format(std::forward<Args>(args), *this), ...);
+        endRecord();
+    }
+
+    constexpr void beginRecord() {
         if constexpr(requires { ComBackend::initTransfer(); }) {
             ComBackend::initTransfer();
         } else if constexpr(requires { comBackend.initTransfer(); }) {
             comBackend.initTransfer();
         }
-
         printHelper(protocol::Start_marker);
-        format<detail::maybeCataloged<detail::FmtStringType::cataloged_normal>()>(
-          fmt,
-          std::forward<Args>(args)...);
+    }
+
+    constexpr void endRecord() {
         printHelper(protocol::End_marker);
+        flush();
 
         if constexpr(requires { ComBackend::finalizeTransfer(); }) {
             ComBackend::finalizeTransfer();
@@ -1014,6 +1198,7 @@ public:
         }
     }
 
+public:
     template<char... chars,
              typename... Args>
     static constexpr void staticPrint(sc::StringConstant<chars...> fmt,
@@ -1023,7 +1208,22 @@ public:
           requires { ComBackend::write(std::span<std::byte const>{}); },
           "staticPrint needs static ComBackend");
 
-        Printer{}.print(fmt, std::forward<Args>(args)...);
+        Printer printer;
+        printer.print(fmt, std::forward<Args>(args)...);
+    }
+
+    template<char... chars,
+             typename... Args>
+    static constexpr void staticPrint(SiteId                       site,
+                                      sc::StringConstant<chars...> fmt,
+                                      Args&&... args) {
+        checkFormatString<decltype(args)...>(fmt);
+        static_assert(
+          requires { ComBackend::write(std::span<std::byte const>{}); },
+          "staticPrint needs static ComBackend");
+
+        Printer printer;
+        printer.print(site, fmt, std::forward<Args>(args)...);
     }
 };
 

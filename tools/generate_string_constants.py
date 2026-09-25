@@ -120,7 +120,7 @@ def group_texts(symbols):
 # others alone - unless it collides and pushes a probed neighbour one slot on. Same strings,
 # same ids.
 LOCATION_LINE = re.compile(rb'^\("([^"]*)", (\d+), ')
-ID_COUNT = 1 << 16   # the wire carries a catalog id as 16 bits
+ID_COUNT = 1 << 15   # 16 bits on the wire, the upper half is the call sites'
 
 
 def id_key(text):

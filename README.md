@@ -65,6 +65,34 @@ This catalog code can be generated in the toolchain with a python script.
 
 Another difference is the function call of the `remote_fmt::parse(...)` function. In this example the function is called with a catalog.
 
+#### Call sites
+
+`catalog<String>()` is the id of a string (0x0000-0x7FFF), defined by the build before the link
+([tools/generate_string_constants.py](tools/generate_string_constants.py)) - to LTO a constant the compiler folds into
+immediates and tables.
+
+`REMOTE_FMT_SITE()` gives a string an id of its call site instead (0x8000-0xFFFF), for a string of which the host wants
+to know where it was printed:
+
+```c++
+auto const site = REMOTE_FMT_SITE();
+printer.print(remote_fmt::SiteId{site(fmt)}, fmt, args...);
+```
+
+The id is 0x8000 plus the address of a one-byte tag, one per call site and per instantiation of the function it is in,
+whose symbol names the string and that function. After the link [tools/extract_sites.py](tools/extract_sites.py) adds
+each site's string and the demangled signature of its function to the json (`"Sites": {"<id>": "<signature>"}`), and
+`remote_fmt::parseMessage(...)` hands the id of a message back with it. Nothing is read by the constant evaluator for it.
+The tags live in sections `remote_fmt_sites.<n>`; a target's linker script keeps them out of the image at address 0:
+
+```
+remote_fmt_sites 0 (INFO) : { KEEP(*(remote_fmt_sites remote_fmt_sites.*)) }
+```
+
+A host executable gets [cmake/remote_fmt_sites_host.ld](cmake/remote_fmt_sites_host.ld) from
+`target_generate_string_constants`. A site id is an address, no constant to the compiler: a plain string keeps
+`catalog<>`. uc_log gives every log line its function this way.
+
 #### Catalog Generator Example
 In this example the usage of the catalog generator is covered in [examples/catalog_generator.cpp](examples/catalog_generator.cpp).
 
@@ -82,12 +110,21 @@ printer.print("Test {}"_sc, 123);
 
 ##### Generated Files
 The python script called by CMake generates different output files. The `${target_name}_string_constants.cpp` file contains the generated catalog. The file is automatically built by the python script.
-The script generates another file named `${target_name}_string_constants.json`. This file contains the contents of the catalog in a `json` notation. This file can be parsed with the json file parser by [nlohmann](https://github.com/nlohmann/json) using the `parseStringConstantsFromJsonFile(...)` function in the `catalog_helpers.hpp`:
+The script generates another file named `${target_name}_string_constants.json` (the call sites are added to it after
+the link). This file contains the contents of the catalog in a `json` notation. This file can be parsed with the json file parser by [nlohmann](https://github.com/nlohmann/json) using the `parseStringConstantsFromJsonFile(...)` function in the `catalog_helpers.hpp`:
 
 ```c++
 #include "remote_fmt/catalog_helpers.hpp"
 auto const catalog = remote_fmt::parseStringConstantsFromJsonFile("path/to/catalog.json");
 ```
+
+## Wire size and backend writes
+
+* A message is gathered in `REMOTE_FMT_STAGING_BYTES` (default 32) bytes on the stack and handed to the backend in
+  one `write`; a longer one goes out in pieces. `0` writes every field on its own, as before.
+* An integer goes out in the smallest width that holds its value (`REMOTE_FMT_COMPACT_INTEGERS`, default `1`): its
+  type byte names that width and the host widens it back, so the text does not change. A contiguous range of integers
+  keeps the full width of its element type.
 
 ## Format string checking
 

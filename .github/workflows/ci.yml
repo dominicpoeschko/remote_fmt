@@ -39,7 +39,7 @@ jobs:
             - name: Set up C++ environment
               run: |
                 pacman -Syu --noconfirm --disable-download-timeout
-                pacman -S --noconfirm --disable-download-timeout git cmake base-devel ${{ matrix.compiler.cc == 'clang' && 'clang' || '' }} ${{ matrix.compiler.stdlib == 'libc++' && 'libc++ lld' || '' }}
+                pacman -S --noconfirm --disable-download-timeout git cmake base-devel python llvm ${{ matrix.compiler.cc == 'clang' && 'clang' || '' }} ${{ matrix.compiler.stdlib == 'libc++' && 'libc++ lld' || '' }}
 
             - name: Checkout repository
               uses: actions/checkout@v5
@@ -82,7 +82,7 @@ jobs:
             - name: Set up C++ environment
               run: |
                 pacman -Syu --noconfirm --disable-download-timeout
-                pacman -S --noconfirm --disable-download-timeout git cmake base-devel python ${{ matrix.compiler.cc == 'clang' && 'clang' || '' }}
+                pacman -S --noconfirm --disable-download-timeout git cmake base-devel python llvm ${{ matrix.compiler.cc == 'clang' && 'clang' || '' }}
 
             - name: Checkout repository
               uses: actions/checkout@v5
@@ -126,7 +126,7 @@ jobs:
             - name: Set up C++ environment
               run: |
                 pacman -Syu --noconfirm --disable-download-timeout
-                pacman -S --noconfirm --disable-download-timeout git cmake base-devel clang
+                pacman -S --noconfirm --disable-download-timeout git cmake base-devel python clang
 
             - name: Checkout repository
               uses: actions/checkout@v5

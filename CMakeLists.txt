@@ -133,6 +133,8 @@ function(target_generate_string_constants targetname)
     else()
         string(JOIN " " flags ${CMAKE_CXX_FLAGS} ${options_flags})
     endif()
+    # a host target's options carry $<COMPILE_LANGUAGE:...>, which a custom command rejects
+    string(GENEX_STRIP "${flags}" flags)
 
     find_package(
         Python3
@@ -162,8 +164,8 @@ function(target_generate_string_constants targetname)
         TARGET ${targetname}
         PRE_LINK COMMAND_EXPAND_LISTS
         COMMAND ${command}
-        BYPRODUCTS ${bin_dir}/${targetname}_string_constants.cpp ${bin_dir}/${targetname}_string_constants.obj
-                   ${bin_dir}/${targetname}_string_constants.json
+        # not the .obj: as an input of this link it would be a cycle for ninja
+        BYPRODUCTS ${bin_dir}/${targetname}_string_constants.cpp ${bin_dir}/${targetname}_string_constants.json
         COMMENT "Extracting string constants for ${targetname}")
 
     set_property(
@@ -182,4 +184,29 @@ function(target_generate_string_constants targetname)
         TARGET ${targetname}
         APPEND
         PROPERTY ADDITIONAL_CLEAN_FILES ${bin_dir}/${targetname}_string_constants.json)
+
+    # after the link: the call sites (catalog.hpp REMOTE_FMT_SITE) into the json
+    if(NOT CMAKE_CROSSCOMPILING)
+        target_link_options(${targetname} PRIVATE "-Wl,-T,${remote_fmt_dir}/cmake/remote_fmt_sites_host.ld")
+        set_property(
+            TARGET ${targetname}
+            APPEND
+            PROPERTY LINK_DEPENDS ${remote_fmt_dir}/cmake/remote_fmt_sites_host.ld)
+    endif()
+    set(sites_json "${bin_dir}/${targetname}_string_constants.json")
+    set(sites_command ${Python3_EXECUTABLE} ${remote_fmt_dir}/tools/extract_sites.py --elf $<TARGET_FILE:${targetname}>
+                      --json ${sites_json})
+    if(CMAKE_NM)
+        list(APPEND sites_command --nm ${CMAKE_NM})
+    endif()
+    add_custom_command(
+        TARGET ${targetname}
+        POST_BUILD
+        COMMAND ${sites_command}
+        COMMENT "Adding the call sites of ${targetname} to its string catalog"
+        VERBATIM)
+    set_property(
+        TARGET ${targetname}
+        APPEND
+        PROPERTY LINK_DEPENDS ${remote_fmt_dir}/tools/extract_sites.py)
 endfunction()
