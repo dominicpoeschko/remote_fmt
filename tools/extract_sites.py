@@ -19,10 +19,11 @@ SITE_TAG_MANGLED = "19REMOTE_FMT_SITE_TAG"
 # `_ZZZ<enclosing>E NK <lambda> clI<sc::StringConstant<...>> ... E19REMOTE_FMT_SITE_TAG`, the lambda being
 # `UlTy..._` (gcc, clang) or clang's `<len>$_<n>` in a function of internal linkage. Split by structure: the
 # string is read from its literals and only the enclosing function goes to the demangler (GNU c++filt
-# reads no `$_<n>` and gives up on long names).
+# reads no `$_<n>` and gives up on long names). `sc::StringConstant` is a substitution (`S<n>_`) when the
+# enclosing function's own template arguments already named it (a StringConstant template parameter).
 SITE = re.compile(
     r"ENK(UlTy(?:RK)?(?:T_|S[0-9A-Z]*_)E[0-9]*_|([0-9]+)\$_([0-9]+))"
-    r"clIN2sc14StringConstantIJ((?:Lcn?[0-9]+E)*)EE")
+    r"clIN(?:2sc14StringConstant|S[0-9A-Z]*_)IJ((?:Lcn?[0-9]+E)*)EE")
 CLANG_LOCAL_LAMBDA = re.compile(r"(?<![0-9])([0-9]+)\$_([0-9]+)")
 SHF_ALLOC = 0x2
 SHT_SYMTAB = 2

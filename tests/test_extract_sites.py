@@ -56,6 +56,19 @@ class SplitTests(unittest.TestCase):
         self.assertEqual(ex.split_site(
             site("1fv", "x", "UlTyRKS0_E_")), ("_Z1fv", b"x"))
 
+    def test_a_substituted_string_constant(self):
+        # A function whose own template argument is a StringConstant: its site's string type
+        # is `N S1_ IJ...E E` (sc::StringConstant substituted), as g++ 16 and clang++ 22 both
+        # mangled it on 2026-09-28.
+        self.assertEqual(ex.split_site(
+            "_ZZZ1fIN2sc14StringConstantIJLc120EEEEEPcvENKUlTyT_E_clINS1_IJLc104ELc105EEEEEE"
+            "DaS4_E19REMOTE_FMT_SITE_TAG"),
+            ("_Z1fIN2sc14StringConstantIJLc120EEEEEPcv", b"hi"))
+        self.assertEqual(ex.split_site(
+            "_ZZZ1fIiEPcvENKUlTyT_E_clIN2sc14StringConstantIJLc104ELc105EEEEEEDaS1_E"
+            "19REMOTE_FMT_SITE_TAG"),
+            ("_Z1fIiEPcv", b"hi"), "and the same function without it")
+
     def test_a_site_in_a_lambda_keeps_the_outer_lambda(self):
         self.assertEqual(ex.split_site(site("Z1fvENKUlvE_clEv", "in"))[0],
                          "_ZZ1fvENKUlvE_clEv")
@@ -138,8 +151,9 @@ volatile unsigned sink;
 namespace { void local() { auto s = REMOTE_FMT_SITE(); sink = s("in local {} ℃"_sc); }
 void longLine() { auto s = REMOTE_FMT_SITE(); sink = s(LONG_LINE); } }
 template<typename T> struct Box { static void get() { auto s = REMOTE_FMT_SITE(); sink = s("box"_sc); } };
+template<typename S> struct Named { static void get() { auto s = REMOTE_FMT_SITE(); sink = s("named"_sc); } };
 extern "C" [[noreturn]] void Reset_Handler() {
-    local(); longLine(); Box<int>::get(); Box<char>::get();
+    local(); longLine(); Box<int>::get(); Box<char>::get(); Named<decltype("x"_sc)>::get();
     while(true) {}
 }
 '''
@@ -182,13 +196,15 @@ SECTIONS {
                 strings, sites = ex.sites_of(image, shutil.which(tool))
                 self.assertEqual(sorted(strings.values()),
                                  sorted([b"box", b"box", "in local {} ℃".encode(),
-                                         LONG_LINE.encode()]))
-                self.assertEqual(len(set(strings)), 4, "every site its own id")
+                                         LONG_LINE.encode(), b"named"]))
+                self.assertEqual(len(set(strings)), 5, "every site its own id")
                 self.assertTrue(all(0x8000 <= i < 0x10000 for i in strings))
-                self.assertEqual(sorted(sites.values()),
+                # GNU c++filt spells a closing pair `> >`
+                self.assertEqual(sorted(s.replace("> >", ">>") for s in sites.values()),
                                  ["(anonymous namespace)::local()",
                                   "(anonymous namespace)::longLine()", "Box<char>::get()",
-                                  "Box<int>::get()"])
+                                  "Box<int>::get()",
+                                  "Named<sc::StringConstant<(char)120>>::get()"])
 
     def test_a_catalog_in_the_image_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -208,8 +224,8 @@ SECTIONS {
                 data = json.load(f)
             texts = {text for _, text in data["StringConstants"]}
             self.assertEqual(
-                texts, {"a string", "box", "in local {} ℃", LONG_LINE})
-            self.assertEqual(len(data["Sites"]), 4)
+                texts, {"a string", "box", "in local {} ℃", LONG_LINE, "named"})
+            self.assertEqual(len(data["Sites"]), 5)
 
     def test_a_site_on_a_string_id_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
