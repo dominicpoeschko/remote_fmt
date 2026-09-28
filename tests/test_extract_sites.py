@@ -101,8 +101,140 @@ class SplitTests(unittest.TestCase):
         self.assertEqual(ex.local_lambda_named("_Z12$_0x"), "_Z12$_0x")
 
 
+class AbbreviateTests(unittest.TestCase):
+    def check(self, signature, expected, keep=8, keep_names=None):
+        self.assertEqual(ex.abbreviated(signature, keep, keep if keep_names is None else keep_names),
+                         expected)
+
+    def test_short_lists_stay(self):
+        self.check("ns::A<int, B<char>>::f(C<int>)",
+                   "ns::A<int, B<char>>::f(C<int>)", keep=12)
+
+    def test_a_long_list_is_cut_after_an_argument(self):
+        self.check("A<int, long, char>::f()", "A<int, …>::f()")
+        self.check("A<unsigned long, char>::f()", "A<…>::f()", keep=8)
+
+    def test_a_long_nested_list_collapses(self):
+        self.check("A<B<int, long, char>>::f()",
+                   "A<B<…>>::f()", keep_names=100)
+
+    def test_innermost_first(self):
+        # uc_log's qualifiedFunction still reads `App<Bus<>, Cfg>::run`
+        self.check("App<Bus<Arg, Arg, Arg>, Cfg>::run()",
+                   "App<Bus<…>, Cfg>::run()", keep=12)
+        self.check("App<Bus<Arg, Arg, Arg>, Config, Other>::run()", "App<Bus<…>, Config, …>::run()",
+                   keep=12, keep_names=15)
+
+    def test_counted_as_uc_log_shows_it(self):
+        # no qualifiers, and a nested list's content not at all
+        self.check("App<ns::inner::Bus<ns::Pin<1>, ns::Pin<2>>, ns::Config>::run()",
+                   "App<ns::inner::Bus<ns::Pin<1>, ns::Pin<2>>, ns::Config>::run()",
+                   keep=100, keep_names=12)
+
+    def test_only_the_class_list_keeps_its_arguments(self):
+        # uc_log shows the arguments of the class a function belongs to, and nothing else
+        self.check("A<int, long, char>::f()",
+                   "A<int, long, …>::f()", keep_names=12)
+        self.check("A<int, long, char> g()", "A<…> g()", keep_names=100)
+        self.check("f(A<int, long, char> const&, B<int>)", "f(A<…> const&, B<int>)",
+                   keep_names=100)
+        self.check("ns::f<int, long, char>(int)",
+                   "ns::f<…>(int)", keep_names=100)
+        self.check("App<Bus<int>>::run<int, long, char>(Bus<int, long, char>)",
+                   "App<Bus<int>>::run<…>(Bus<…>)", keep_names=100)
+
+    def test_gnu_spacing(self):
+        self.check("A<B<int, long, char> >::f()",
+                   "A<B<…> >::f()", keep_names=100)
+
+    def test_operators_are_names(self):
+        for signature in ["X::operator<(X)", "X::operator>>(int)", "X::operator->()",
+                          "X::operator<=>(X const&)", "X::operator()(int)", "X::operator[](int)",
+                          "operator<<(std::ostream&, X)", "X::operator bool() const"]:
+            self.check(signature, signature)
+
+    def test_an_operator_template(self):
+        # llvm-cxxfilt writes the arguments right after the symbol, GNU c++filt after a space;
+        # uc_log shows them as they are, so they stay whole
+        for signature in ["bool operator<<<int, long, char>(int, X)",
+                          "bool operator< <int, long, char>(int, X)",
+                          "bool B<int>::operator><int, long, char>(int)",
+                          "X::operator()<A<B<int, long, char>>>(int)::'lambda'()"]:
+            self.check(signature, signature)
+        longer = "A<" + "B<int, long>, " * 30 + "C>"
+        self.check(f"X::operator()<{longer}>(int)", "X::operator()<A<…>>(int)")
+
+    def test_expressions_in_arguments(self):
+        # as llvm-cxxfilt and c++filt print a dependent `N > 2`, `N < 2`, `(N >> 1) > 1`
+        for signature in ["void f<3>(A<(3 > 2)>)", "void f<3>(A<((3)>(2))>)",
+                          "void g<3>(A<(3)<(2)>)", "void h<5>(A<(((5)>>(1))>(1))>)"]:
+            self.check(signature, signature, keep=100)
+        self.check("void h<5>(A<(5 >> 1 > 1), int, long>)",
+                   "void h<5>(A<…>)", keep=16)
+        self.check("B<A<(5 >> 1 > 1), int, long>>::f()",
+                   "B<A<…>>::f()", keep=16)
+
+    def test_a_function_type_argument_is_abbreviated_inside(self):
+        self.check("F<void (int)>::f()", "F<void (int)>::f()", keep=10)
+        self.check("F<void (B<int, long, char>)>::f()",
+                   "F<void (B<…>)>::f()", keep_names=100)
+
+    def test_lambdas_and_anonymous_namespaces(self):
+        signature = "(anonymous namespace)::f()::'lambda'(auto)::operator()<int>(int) const"
+        self.check(signature, signature)
+        self.check("{lambda(auto:1)#1}::operator()<A<int, long, char>>(A<int, long, char>) const",
+                   "{lambda(auto:1)#1}::operator()<A<int, long, char>>(A<…>) const")
+        # a lambda's parameters inside a template argument list are abbreviated too
+        self.check("f<T<'lambda'(Bus<int, long, char, short, bool>&)>>(int)",
+                   "f<T<'lambda'(Bus<…>&)>>(int)", keep=20, keep_names=100)
+
+    def test_unbalanced_stays(self):
+        # llvm-cxxfilt's `N < 2` in an argument has no parentheses
+        self.check("void g<3>(A<3 < 2>)", "void g<3>(A<3 < 2>)")
+        self.check("f(A<B<int, long, char>)", "f(A<B<…>)")
+        self.check("f(A<B<int, long, char>) x", "f(A<B<…>) x")
+        self.check("f(a))", "f(a))")
+
+    def test_memo_gives_the_same(self):
+        inner = "B<" + ", ".join(f"T{i}<int, long>" for i in range(40)) + ">"
+        signature = f"f<A<{inner}, {inner}>>(A<{inner}, {inner}>, C<{inner}>)"
+        memo = {}
+        first = ex.abbreviated(signature, memo=memo)
+        self.assertTrue(memo, "the long nested lists are remembered")
+        self.assertEqual(ex.abbreviated(signature, memo=memo), first)
+        self.assertEqual(first, "f<A<B<…>, B<…>>>(A<B<…>, B<…>>, C<B<…>>)")
+        # a remembered nested list met as a name's own list is not taken from the memo
+        self.assertEqual(ex.abbreviated(f"g({inner})", memo=memo),
+                         ex.abbreviated(f"g({inner})"))
+
+    def test_default_keeps_the_ordinary(self):
+        signature = ("Kvasir::I2C::Device<Kvasir::I2C::Bus<Hw::Sda, Hw::Scl>, Kvasir::Clock, "
+                     "Chip::Tca9548a>::run()")
+        self.assertEqual(ex.abbreviated(signature), signature)
+
+
 @unittest.skipUnless(DEMANGLERS, "needs llvm-cxxfilt or c++filt")
 class DemangleTests(unittest.TestCase):
+    def test_long_template_arguments_are_abbreviated(self):
+        # Box<Pack<T0, ..., T39>>::get(): each demangler, the inner list gives way first
+        args = "".join(f"N2ns2T{i}E" if i <
+                       10 else f"N2ns3T{i}E" for i in range(40))
+        name = site(f"N3BoxIJ4PackIJ{args}EEEE3getEv", "x")
+        for tool in DEMANGLERS:
+            with self.subTest(tool=tool):
+                (signature, text), = ex.demangle_sites(
+                    [name], shutil.which(tool))
+                # GNU c++filt spells a closing pair `> >`
+                self.assertEqual((signature.replace("> >", ">>"), text),
+                                 ("Box<Pack<…>>::get()", b"x"))
+
+    def test_an_unreadable_long_name_is_cut(self):
+        (signature, _), = ex.demangle_sites([site("Q" + "9broken" * 60, "x")],
+                                            shutil.which(DEMANGLERS[0]))
+        self.assertEqual(len(signature), ex.MAX_MANGLED + 1)
+        self.assertTrue(signature.startswith("_ZQ9broken")
+                        and signature.endswith("…"))
+
     def test_every_demangler(self):
         names = [clang_local("N12_GLOBAL__N_11fEv", "y" * 400),
                  site("N6Kvasir3I2C3BusIcE3runEv", "up"), "_Z1gv"]
@@ -223,6 +355,9 @@ SECTIONS {
             with open(out) as f:
                 data = json.load(f)
             texts = {text for _, text in data["StringConstants"]}
+            with open(out, encoding="utf-8") as f:
+                self.assertIn(
+                    "℃", f.read(), "written as UTF-8, not \\u escapes")
             self.assertEqual(
                 texts, {"a string", "box", "in local {} ℃", LONG_LINE, "named"})
             self.assertEqual(len(data["Sites"]), 5)
