@@ -15,6 +15,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+sys.dont_write_bytecode = True  # no __pycache__ next to the imported tools
 sys.path.insert(0, os.path.join(os.path.dirname(
     os.path.abspath(__file__)), "..", "tools"))
 import generate_string_constants as gen  # noqa: E402

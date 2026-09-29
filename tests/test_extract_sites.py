@@ -15,6 +15,7 @@ import unittest
 import unittest.mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.dont_write_bytecode = True  # no __pycache__ next to the imported tools
 sys.path.insert(0, os.path.join(HERE, "..", "tools"))
 import extract_sites as ex  # noqa: E402
 
