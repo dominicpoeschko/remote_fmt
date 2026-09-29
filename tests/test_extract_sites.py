@@ -295,6 +295,27 @@ class DemangleTests(unittest.TestCase):
                      "(Omniscope::SetMetaData const&) const", b"x"),
                     ("void f<1>()", b"y")])
 
+    @unittest.skipUnless(len(DEMANGLERS) == 2, "needs llvm-cxxfilt and c++filt")
+    def test_a_name_with_both_is_read_without_the_builtin_tn(self):
+        # F::handler<Id::a>(e, [] {}) in a generic lambda in t2(): the closure's `RT_` stops
+        # llvm-cxxfilt, the `TnDa` GNU c++filt -- which reads it with the mark dropped
+        name = site(
+            "N1F7handlerITnDaL2Id0EiZZ2t2vENK3$_0clIiEEDaRT_EUlvE_EEvRT0_T1_", "x")
+        for tool in DEMANGLERS:
+            with self.subTest(tool=tool):
+                self.assertEqual(ex.demangle_sites([name], shutil.which(tool)),
+                                 [("void F::handler<…>(int&, t2()::lambda_0::operator()<int>(int&) "
+                                   "const::{lambda()#1})", b"x")])
+
+    def test_only_a_tn_before_a_builtin_type_is_dropped(self):
+        self.assertEqual(ex.without_builtin_tn(
+            "_Z1fITnDaLi1EEvv"), "_Z1fILi1EEvv")
+        self.assertEqual(ex.without_builtin_tn(
+            "_Z1fITniLi1EEvv"), "_Z1fILi1EEvv")
+        # a class type is a substitution candidate: dropping it would move every `S<n>_`
+        self.assertEqual(ex.without_builtin_tn(
+            "_Z1fITn1ALi1EEvv"), "_Z1fITn1ALi1EEvv")
+
     def test_an_unreadable_name_is_reported_once_with_the_tools_tried(self):
         with unittest.mock.patch("sys.stderr", new_callable=io.StringIO) as err:
             ex.demangle_sites([site("Q9broken", "x"), site("Q9broken", "y")],

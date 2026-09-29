@@ -136,13 +136,27 @@ def split_site(mangled):
 # - llvm-cxxfilt (22) reads no template parameter (`T_`) in the parameters of a member template of
 #   a local class: `main::$_7::operator()<X>(X const&)`, a generic lambda in main (2 of 911);
 # - GNU c++filt (binutils 2.47) gives up on names past ~3.7 KB (489 of 911) and reads no `Tn<type>`
-#   or `Tk<concept>`, clang's mark on a `template<auto>` or constrained parameter's argument.
+#   or `Tk<concept>`, clang's mark on a `template<auto>` or constrained parameter's argument --
+#   before a builtin type it is given the name without the mark (without_builtin_tn()).
 def demanglers(tool):
     """`tool`, then the other demangler if there is one. find_demangler() prefers llvm-cxxfilt
     wherever it looks, so the other one is c++filt, which it only looks for on PATH too."""
     other = shutil.which(
         "c++filt" if "llvm-cxxfilt" in os.path.basename(tool) else "llvm-cxxfilt")
     return [tool] if other is None else [tool, other]
+
+
+# clang's `Tn` before a builtin type (`TnDa`: a `template<auto>` argument). A builtin type is no
+# substitution candidate, so dropping the mark moves no `S<n>_` and GNU c++filt reads the rest --
+# which is what reads a name with both (a closure from a generic lambda passed to a
+# `template<auto>`, where llvm-cxxfilt reads no `T_` either). A class type after `Tn` is one, so
+# that mark stays.
+CLANG_TN_BUILTIN = re.compile(r"Tn(?:[vwbcahstijlmxynofdegz]|D[acnisudfeh])")
+
+
+def without_builtin_tn(mangled):
+    """`mangled` without clang's `Tn` marks before builtin types, as GNU c++filt reads it."""
+    return CLANG_TN_BUILTIN.sub("", mangled)
 
 
 def demangle(tools, names):
@@ -153,7 +167,10 @@ def demangle(tools, names):
     for tool in tools:
         gnu = "llvm-cxxfilt" not in os.path.basename(tool)
         todo = [i for i, name in enumerate(out) if name.startswith("_Z")]
-        for i, name in zip(todo, run_demangler(tool, [out[i] for i in todo])):
+        given = [without_builtin_tn(out[i]) if gnu else out[i] for i in todo]
+        for i, name in zip(todo, run_demangler(tool, given)):
+            if gnu and name.startswith("_Z"):
+                continue   # unread: the name as it was, not the one without its marks
             while gnu and "> >" in name:
                 name = name.replace("> >", ">>")
             out[i] = name
