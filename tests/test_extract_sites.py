@@ -4,6 +4,7 @@ ld.lld on arm-none-eabi-g++'s headers, each with and without LTO (skipped withou
 RF_TEST_INCLUDES (remote_fmt/src first) as ctest sets it.
 """
 
+import io
 import json
 import os
 import shutil
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "tools"))
@@ -164,6 +166,22 @@ class AbbreviateTests(unittest.TestCase):
         longer = "A<" + "B<int, long>, " * 30 + "C>"
         self.check(f"X::operator()<{longer}>(int)", "X::operator()<A<…>>(int)")
 
+    def test_a_template_operator_less(self):
+        # llvm-cxxfilt writes operator< with its arguments as `operator<<int>`; read as
+        # `operator<<` it left a `>` over, which crashed the step and the build
+        for signature in ["bool Conv::operator<<int>(int) const", "bool Conv::operator<<<int>(int) const",
+                          "bool Conv::operator< <int>(int) const",
+                          "bool Conv::operator><int>(int) const", "bool Conv::operator>><int>(int) const"]:
+            self.check(signature, signature)
+        self.check("void f<&X::operator<>(int)",
+                   "void f<&X::operator<>(int)", keep=100)
+        self.check("bool Conv::operator<<A<int, long, char>>(int) const",
+                   "bool Conv::operator<<A<int, long, char>>(int) const")
+
+    def test_a_stray_closing_bracket_stays(self):
+        self.check("a > b", "a > b")
+        self.check("f(A<int, long, char>) >", "f(A<…>) >")
+
     def test_expressions_in_arguments(self):
         # as llvm-cxxfilt and c++filt print a dependent `N > 2`, `N < 2`, `(N >> 1) > 1`
         for signature in ["void f<3>(A<(3 > 2)>)", "void f<3>(A<((3)>(2))>)",
@@ -195,6 +213,14 @@ class AbbreviateTests(unittest.TestCase):
         self.check("f(A<B<int, long, char>) x", "f(A<B<…>) x")
         self.check("f(a))", "f(a))")
 
+    def test_a_signature_it_cannot_read_is_cut(self):
+        with unittest.mock.patch.object(ex, "abbreviated", side_effect=IndexError("bug")), \
+                unittest.mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertEqual(ex.abbreviated_or_cut("f()", {}), "f()")
+            self.assertEqual(ex.abbreviated_or_cut("g" * 300, {}),
+                             "g" * ex.MAX_MANGLED + "…")
+        self.assertIn("IndexError: bug", err.getvalue())
+
     def test_memo_gives_the_same(self):
         inner = "B<" + ", ".join(f"T{i}<int, long>" for i in range(40)) + ">"
         signature = f"f<A<{inner}, {inner}>>(A<{inner}, {inner}>, C<{inner}>)"
@@ -224,9 +250,16 @@ class DemangleTests(unittest.TestCase):
             with self.subTest(tool=tool):
                 (signature, text), = ex.demangle_sites(
                     [name], shutil.which(tool))
-                # GNU c++filt spells a closing pair `> >`
-                self.assertEqual((signature.replace("> >", ">>"), text),
+                self.assertEqual((signature, text),
                                  ("Box<Pack<…>>::get()", b"x"))
+
+    def test_the_same_spelling_from_each_demangler(self):
+        # GNU c++filt's `> >` is written `>>`: the catalog does not depend on the machine
+        name = site("N1AIN1BIiEEE1fEv", "x")    # A<B<int>>::f()
+        for tool in DEMANGLERS:
+            with self.subTest(tool=tool):
+                self.assertEqual(ex.demangle_sites([name], shutil.which(tool)),
+                                 [("A<B<int>>::f()", b"x")])
 
     def test_an_unreadable_long_name_is_cut(self):
         (signature, _), = ex.demangle_sites([site("Q" + "9broken" * 60, "x")],
@@ -247,6 +280,27 @@ class DemangleTests(unittest.TestCase):
     def test_an_unreadable_function_keeps_its_mangled_name(self):
         self.assertEqual(ex.demangle_sites([site("Q9broken", "x")], shutil.which(DEMANGLERS[0])),
                          [("_ZQ9broken", b"x")])
+
+    @unittest.skipUnless(len(DEMANGLERS) == 2, "needs llvm-cxxfilt and c++filt")
+    def test_the_other_demangler_reads_what_the_first_cannot(self):
+        # a generic lambda in main (`$_7`, Omniscope): llvm-cxxfilt reads no `T_` in a member
+        # template of a local class; f<1>() with clang's `TnDa`: GNU c++filt reads no `Tn`
+        names = [site("Z4mainENK3$_7clIN9Omniscope11SetMetaDataEEEDaRKT_", "x"),
+                 site("1fITnDaLi1EEvv", "y")]
+        for tool in DEMANGLERS:
+            with self.subTest(tool=tool):
+                self.assertEqual(ex.demangle_sites(names, shutil.which(tool)), [
+                    ("auto main::lambda_7::operator()<Omniscope::SetMetaData>"
+                     "(Omniscope::SetMetaData const&) const", b"x"),
+                    ("void f<1>()", b"y")])
+
+    def test_an_unreadable_name_is_reported_once_with_the_tools_tried(self):
+        with unittest.mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            ex.demangle_sites([site("Q9broken", "x"), site("Q9broken", "y")],
+                              shutil.which(DEMANGLERS[0]))
+        self.assertEqual(err.getvalue().count("_ZQ9broken"), 1)
+        for tool in DEMANGLERS:
+            self.assertIn(tool, err.getvalue())
 
 
 ARM = ["-mcpu=cortex-m0plus", "-mthumb"]
@@ -331,12 +385,24 @@ SECTIONS {
                                          LONG_LINE.encode(), b"named"]))
                 self.assertEqual(len(set(strings)), 5, "every site its own id")
                 self.assertTrue(all(0x8000 <= i < 0x10000 for i in strings))
-                # GNU c++filt spells a closing pair `> >`
-                self.assertEqual(sorted(s.replace("> >", ">>") for s in sites.values()),
+                self.assertEqual(sorted(sites.values()),
                                  ["(anonymous namespace)::local()",
                                   "(anonymous namespace)::longLine()", "Box<char>::get()",
                                   "Box<int>::get()",
                                   "Named<sc::StringConstant<(char)120>>::get()"])
+
+    @unittest.skipUnless(shutil.which("clang++") and shutil.which("ld.lld"), "needs clang++ and ld.lld")
+    def test_a_32_bit_image_of_another_machine(self):
+        # catalog.hpp counts from address 0 wherever pointers are 32 bits, not only on ARM
+        riscv = ["clang++", "--target=riscv32-unknown-elf", "-march=rv32imac", "-mabi=ilp32",
+                 "-nostdinc++", "-nostdinc", *gcc_system_includes(), "-fuse-ld=lld"]
+        with tempfile.TemporaryDirectory() as directory:
+            strings, sites = ex.sites_of(self.build(directory, True, [], riscv),
+                                         ex.find_demangler())
+        self.assertEqual(sorted(strings.values()),
+                         sorted([b"box", b"box", "in local {} ℃".encode(), LONG_LINE.encode(),
+                                 b"named"]))
+        self.assertTrue(all(0x8000 <= i < 0x10000 for i in strings))
 
     def test_a_catalog_in_the_image_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:

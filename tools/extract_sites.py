@@ -28,7 +28,6 @@ CLANG_LOCAL_LAMBDA = re.compile(r"(?<![0-9])([0-9]+)\$_([0-9]+)")
 SHF_ALLOC = 0x2
 SHT_SYMTAB = 2
 STT_OBJECT = 1
-EM_ARM = 40
 FIRST_SITE_ID = 0x8000
 ID_LIMIT = 1 << 16
 
@@ -38,13 +37,12 @@ class Error(Exception):
 
 
 def read_symbols(image):
-    """(machine, catalog section indices with their flags, symbols as (name, value, section))."""
+    """(64-bit, catalog section indices with their flags, symbols as (name, value, section))."""
     if image[:4] != b"\x7fELF":
         raise Error("not an ELF file")
     elf_class, data = image[4], image[5]
     if data != 1:
         raise Error("big endian ELF is not supported")
-    machine, = struct.unpack_from("<H", image, 18)
     if elf_class == 1:
         shoff, = struct.unpack_from("<I", image, 32)
         shentsize, shnum, shstrndx = struct.unpack_from("<HHH", image, 46)
@@ -85,11 +83,12 @@ def read_symbols(image):
                     symbol.unpack_from(image, offset + i * symbol.size))
                 if sym_name and info & 0xF == STT_OBJECT:
                     symbols.append((string(link, sym_name), value, shndx))
-    return machine, catalog, symbols
+    return elf_class == 2, catalog, symbols
 
 
 def find_demangler(nm=None):
-    """llvm-cxxfilt next to nm, else on PATH, else c++filt (which gives up on long symbols)."""
+    """llvm-cxxfilt next to nm, else on PATH, else c++filt (which gives up on long symbols). What it
+    cannot read goes to the other one (demanglers())."""
     candidates = []
     if nm:
         path = shutil.which(nm) or nm
@@ -132,6 +131,35 @@ def split_site(mangled):
     return "_Z" + mangled[len("_ZZZ"):match.start()], text
 
 
+# Neither demangler reads every name, so what one cannot read goes to the other (measured on 911
+# enclosing functions of 300 images, 2026-09-28):
+# - llvm-cxxfilt (22) reads no template parameter (`T_`) in the parameters of a member template of
+#   a local class: `main::$_7::operator()<X>(X const&)`, a generic lambda in main (2 of 911);
+# - GNU c++filt (binutils 2.47) gives up on names past ~3.7 KB (489 of 911) and reads no `Tn<type>`
+#   or `Tk<concept>`, clang's mark on a `template<auto>` or constrained parameter's argument.
+def demanglers(tool):
+    """`tool`, then the other demangler if there is one. find_demangler() prefers llvm-cxxfilt
+    wherever it looks, so the other one is c++filt, which it only looks for on PATH too."""
+    other = shutil.which(
+        "c++filt" if "llvm-cxxfilt" in os.path.basename(tool) else "llvm-cxxfilt")
+    return [tool] if other is None else [tool, other]
+
+
+def demangle(tools, names):
+    """Each name demangled by the first of `tools` that reads it; one none reads stays `_Z...`.
+    GNU c++filt's closing `> >` is written `>>` as llvm-cxxfilt writes it, so the catalog does not
+    depend on the demangler that read a name (uc_log shows the class's arguments)."""
+    out = list(names)
+    for tool in tools:
+        gnu = "llvm-cxxfilt" not in os.path.basename(tool)
+        todo = [i for i, name in enumerate(out) if name.startswith("_Z")]
+        for i, name in zip(todo, run_demangler(tool, [out[i] for i in todo])):
+            while gnu and "> >" in name:
+                name = name.replace("> >", ">>")
+            out[i] = name
+    return out
+
+
 def run_demangler(tool, names):
     if not names:
         return []
@@ -160,7 +188,7 @@ MAX_NESTED_ARGS = 24
 MAX_ARGS = 200
 MAX_OPERATOR_ARGS = 256
 QUALIFIER = re.compile(r"\w+::")
-# A name the demangler could not read is kept mangled, cut to this length.
+# A name neither demangler could read (see demangle()) is kept mangled, cut to this length.
 MAX_MANGLED = 256
 OPERATOR_CHARS = "<>=-!+*/%^&|~,"
 # Longest first: `operator<<<int>` (llvm-cxxfilt) is `operator<<` and its arguments `<int>`.
@@ -171,7 +199,9 @@ OPERATORS = sorted(["<=>", "<<=", ">>=", "->*", "<<", ">>", "<=", ">=", "==", "!
 
 def operator_end(signature, i):
     """End of the operator name at `i` (`operator<`, `operator()`), None if there is none: its
-    `<`, `>`, `(` are no brackets."""
+    `<`, `>`, `(` are no brackets. The longest symbol that is followed by what may follow a
+    name: llvm-cxxfilt's `operator<<int>` is `operator<` and `<int>`, `operator<<<int>` is
+    `operator<<` and `<int>`."""
     if not signature.startswith("operator", i) or (i != 0 and signature[i - 1] not in ": "):
         return None
     j = i + len("operator")
@@ -180,9 +210,11 @@ def operator_end(signature, i):
     run = j
     while run < len(signature) and signature[run] in OPERATOR_CHARS:
         run += 1
-    symbol = next(
-        (op for op in OPERATORS if signature.startswith(op, j, run)), None)
-    return None if symbol is None else j + len(symbol)
+    for op in OPERATORS:
+        end = j + len(op)
+        if signature.startswith(op, j, run) and (end == len(signature) or signature[end] in "(<> :,)"):
+            return end
+    return None
 
 
 ARGUMENTS = re.compile(r"[<>(),]")
@@ -280,7 +312,7 @@ def abbreviated(signature, keep=MAX_NESTED_ARGS, keep_names=MAX_ARGS, memo=None)
         elif c == "(":
             stack.append(["(", stop, []])
             parens += 1
-        elif c == ">" and stack[-1][0].startswith("<"):
+        elif c == ">" and (stack[-1][0] or "").startswith("<"):
             kind, start, parts = stack.pop()
             lists -= 1
             inner = "".join(parts)
@@ -312,15 +344,27 @@ def abbreviated(signature, keep=MAX_NESTED_ARGS, keep_names=MAX_ARGS, memo=None)
     return "".join(stack[0][2])
 
 
+def abbreviated_or_cut(signature, memo):
+    """abbreviated(), or a signature it could not read cut to MAX_MANGLED: the catalog's size is
+    no reason to fail a firmware build."""
+    try:
+        return abbreviated(signature, memo=memo)
+    except Exception as e:  # noqa: BLE001 - any bug in the abbreviation
+        print(f"extract_sites: cannot abbreviate {signature[:120]} ({type(e).__name__}: {e}), "
+              f"cut instead", file=sys.stderr)
+        return signature if len(signature) <= MAX_MANGLED else signature[:MAX_MANGLED] + "…"
+
+
 def demangle_sites(names, demangler):
-    """(signature, string bytes) or None per site tag name; a function the demangler cannot read
+    """(signature, string bytes) or None per site tag name; a function neither demangler reads
     keeps its mangled name."""
     splits = [split_site(name) for name in names]
     found = [split for split in splits if split is not None]
-    readable = run_demangler(
-        demangler, [local_lambda_named(enclosing) for enclosing, _ in found])
+    tools = demanglers(demangler)
+    readable = demangle(tools, [local_lambda_named(enclosing)
+                        for enclosing, _ in found])
     signatures = iter(readable)
-    memo, done = {}, {}
+    memo, done, unreadable = {}, {}, set()
     parts = []
     for split in splits:
         if split is None:
@@ -329,13 +373,16 @@ def demangle_sites(names, demangler):
         enclosing, text = split
         signature = next(signatures)
         if signature.startswith("_Z"):
-            print(f"extract_sites: {os.path.basename(demangler)} cannot read {enclosing[:120]}, "
-                  f"kept mangled", file=sys.stderr)
+            if enclosing not in unreadable:
+                unreadable.add(enclosing)
+                tried = ", ".join(os.path.basename(tool) for tool in tools)
+                print(f"extract_sites: {tried} cannot read {enclosing[:120]}, kept mangled",
+                      file=sys.stderr)
             signature = enclosing if len(
                 enclosing) <= MAX_MANGLED else enclosing[:MAX_MANGLED] + "…"
         else:
             if signature not in done:
-                done[signature] = abbreviated(signature, memo=memo)
+                done[signature] = abbreviated_or_cut(signature, memo)
             signature = done[signature]
         parts.append((signature, text))
     return parts
@@ -343,17 +390,18 @@ def demangle_sites(names, demangler):
 
 def sites_of(image, demangler):
     """({id: string bytes}, {id: signature}) of the call sites of an ELF image."""
-    machine, sections, symbols = read_symbols(image)
+    # as catalog.hpp siteId() counts: from address 0 with 32-bit pointers, from siteAnchor with 64
+    wide, sections, symbols = read_symbols(image)
     for flags in sections.values():
-        if machine == EM_ARM and flags & SHF_ALLOC:
+        if not wide and flags & SHF_ALLOC:
             raise Error(f"the site tags are part of the image: the linker script needs "
                         f"`{SECTION} 0 (INFO) : {{ KEEP(*({SECTION} {SECTION}.*)) }}`")
     anchor = None
-    if machine != EM_ARM:
+    if wide:
         anchor = next(
             (value for name, value, _ in symbols if name == ANCHOR), None)
         if anchor is None and sections:
-            raise Error(f"no {ANCHOR} in a host image")
+            raise Error(f"no {ANCHOR} in a 64-bit image")
 
     # by name: a host's section also holds C runtime objects
     tags = [(name, value) for name, value, shndx in symbols
@@ -384,7 +432,7 @@ def invalid_utf8(strings):
 def merge(path, strings, sites):
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
-    taken = {entry[0] for entry in data.get("StringConstants", [])}
+    taken = {entry[0] for entry in data.setdefault("StringConstants", [])}
     for site_id in sorted(strings):
         if site_id in taken:
             raise Error(f"site id {site_id:#x} is a string's id too: the generator's ids must stay "
