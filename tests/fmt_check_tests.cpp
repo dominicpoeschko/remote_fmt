@@ -100,9 +100,9 @@ struct FixedMap {
     using value_type  = std::pair<K, V>;
     std::array<value_type, Capacity> data_{};
 
-    constexpr auto begin() const { return data_.begin(); }
+    constexpr auto begin() const REMOTE_FMT_LIFETIMEBOUND { return data_.begin(); }
 
-    constexpr auto end() const { return data_.end(); }
+    constexpr auto end() const REMOTE_FMT_LIFETIMEBOUND { return data_.end(); }
 };
 
 template<typename K, std::size_t Capacity>
@@ -111,9 +111,9 @@ struct FixedSet {
     using value_type = K;
     std::array<K, Capacity> data_{};
 
-    constexpr auto begin() const { return data_.begin(); }
+    constexpr auto begin() const REMOTE_FMT_LIFETIMEBOUND { return data_.begin(); }
 
-    constexpr auto end() const { return data_.end(); }
+    constexpr auto end() const REMOTE_FMT_LIFETIMEBOUND { return data_.end(); }
 };
 
 static_assert(maps_to<FixedMap<Color,
@@ -134,18 +134,18 @@ struct MappedTypeOnly {   // is_map, but no key_type
     using value_type  = std::pair<int, V>;
     std::array<value_type, 2> data_{};
 
-    constexpr auto begin() const { return data_.begin(); }
+    constexpr auto begin() const REMOTE_FMT_LIFETIMEBOUND { return data_.begin(); }
 
-    constexpr auto end() const { return data_.end(); }
+    constexpr auto end() const REMOTE_FMT_LIFETIMEBOUND { return data_.end(); }
 };
 
 struct MapWithoutPairElement {   // is_map, but the element is not a pair
     using mapped_type = int;
     std::array<int, 2> data_{};
 
-    constexpr auto begin() const { return data_.begin(); }
+    constexpr auto begin() const REMOTE_FMT_LIFETIMEBOUND { return data_.begin(); }
 
-    constexpr auto end() const { return data_.end(); }
+    constexpr auto end() const REMOTE_FMT_LIFETIMEBOUND { return data_.end(); }
 };
 
 static_assert(maps_to<MappedTypeOnly<Color>,

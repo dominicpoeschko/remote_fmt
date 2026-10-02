@@ -69,7 +69,7 @@ emptyCatalog() {
 // that keeps the mapping from input to behaviour total, which the mutator relies on.
 class Reader {
 public:
-    explicit Reader(std::span<std::byte const> data) : data_{data} {}
+    explicit Reader(std::span<std::byte const> data REMOTE_FMT_LIFETIMEBOUND) : data_{data} {}
 
     bool exhausted() const { return data_.empty(); }
 

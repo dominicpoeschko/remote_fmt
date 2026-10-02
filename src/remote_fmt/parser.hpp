@@ -399,7 +399,9 @@ namespace detail {
         struct NestingGuard {
             std::size_t& depth;
 
-            explicit NestingGuard(std::size_t& depth_) : depth{depth_} { ++depth; }
+            explicit NestingGuard(std::size_t& depth_ REMOTE_FMT_LIFETIMEBOUND) : depth{depth_} {
+                ++depth;
+            }
 
             NestingGuard(NestingGuard const&) = delete;
 

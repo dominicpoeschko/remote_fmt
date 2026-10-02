@@ -50,6 +50,7 @@ jobs:
               run: >
                 cmake -S tests -B build
                 -DUSE_FORCE_FETCH=ON
+                -DUSE_WARNINGS_AS_ERRORS=ON
                 ${{ matrix.compiler.build_type && format('-DCMAKE_BUILD_TYPE={0}', matrix.compiler.build_type) || '' }}
                 ${{ matrix.compiler.sanitizer && format('-DUSE_SANITIZER={0}', matrix.compiler.sanitizer) || '' }}
                 ${{ matrix.compiler.stdlib && format('-DUSE_STD_LIB={0}', matrix.compiler.stdlib) || '' }}
@@ -90,7 +91,7 @@ jobs:
                 submodules: recursive
 
             - name: Configure CMake
-              run: cmake -S examples -B build_examples -DUSE_FORCE_FETCH=ON
+              run: cmake -S examples -B build_examples -DUSE_FORCE_FETCH=ON -DUSE_WARNINGS_AS_ERRORS=ON
               env:
                 CC: ${{ matrix.compiler.cc }}
                 CXX: ${{ matrix.compiler.cxx }}
@@ -134,7 +135,7 @@ jobs:
                 submodules: recursive
 
             - name: Configure CMake
-              run: cmake -S tests -B build -DUSE_FORCE_FETCH=ON -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+              run: cmake -S tests -B build -DUSE_FORCE_FETCH=ON -DUSE_WARNINGS_AS_ERRORS=ON -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
               env:
                 CC: clang
                 CXX: clang++

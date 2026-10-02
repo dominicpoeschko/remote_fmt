@@ -120,6 +120,17 @@ constexpr auto enum_switch(E   value,
     #endif
 #endif
 
+// Tells clang that a returned reference or a constructed object refers to this argument (or to *this), so its lifetime
+// analysis can see a dangling use. Nothing on other compilers.
+#if defined(__has_cpp_attribute)
+    #if __has_cpp_attribute(clang::lifetimebound)
+        #define REMOTE_FMT_LIFETIMEBOUND [[clang::lifetimebound]]
+    #endif
+#endif
+#ifndef REMOTE_FMT_LIFETIMEBOUND
+    #define REMOTE_FMT_LIFETIMEBOUND
+#endif
+
 namespace remote_fmt {
 
 // Protocol constants
@@ -1054,7 +1065,7 @@ private:
                                     sc::StringConstant<chars...> fmt,
                                     Args&&... args);
 
-    constexpr Printer& out() { return *this; }
+    constexpr Printer& out() REMOTE_FMT_LIFETIMEBOUND { return *this; }
 
     template<detail::FmtStringType ft
              = detail::maybeCataloged<detail::FmtStringType::cataloged_sub>(),
@@ -1111,7 +1122,7 @@ public:
 
     ComBackend const& get_com_backend() const { return comBackend; }
 
-    ComBackend& get_com_backend() { return comBackend; }
+    ComBackend& get_com_backend() REMOTE_FMT_LIFETIMEBOUND { return comBackend; }
 
     template<char... chars,
              typename... Args>
