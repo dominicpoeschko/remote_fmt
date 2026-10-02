@@ -765,7 +765,8 @@ private:
                     printer.lowprint(std::span{range}.subspan(1));
                 }
             } else {
-                for(bool first = true; auto const& element : range) {
+                // by value, as value_t: std::vector<bool> hands out a proxy, which has no formatter
+                for(bool first = true; value_t const element : range) {
                     if(first) {
                         first = false;
                         formatFirst(element, printer);

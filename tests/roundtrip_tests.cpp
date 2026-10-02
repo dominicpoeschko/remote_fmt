@@ -232,6 +232,8 @@ void rangeRoundTrips() {
     CHECK_RT("[]", "{}"_sc, std::vector<int>{});
     CHECK_RT("[1.5, 2.5]", "{}"_sc, std::array<double, 2>{1.5, 2.5});
     CHECK_RT("{1, 2}", "{}"_sc, std::set<int>{1, 2});
+    CHECK_RT("[true, false, true]", "{}"_sc, std::vector<bool>{true, false, true});
+    CHECK_RT("[]", "{}"_sc, std::vector<bool>{});
     CHECK_RT("{1: 2, 3: 4}",
              "{}"_sc,
              std::map<int, int>{
@@ -522,6 +524,7 @@ void fmtParityRanges() {
     CHECK_PARITY("{}", std::vector<double>{1.5, -2.5, 0.1});
     CHECK_PARITY("{}", (std::array<int, 4>{1, 2, 3, 4}));
     CHECK_PARITY("{}", std::set<int>{3, 1, 2});
+    CHECK_PARITY("{}", std::vector<bool>{true, false, true});
     CHECK_PARITY("{}",
                  std::vector<std::vector<int>>{
                    {1, 2},
