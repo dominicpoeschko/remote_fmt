@@ -954,7 +954,7 @@ template<typename Printer,
 static constexpr auto format_to(Printer&                     printer,
                                 sc::StringConstant<chars...> fmt,
                                 Args&&... args) {
-    checkFormatString<decltype(args)...>(fmt);
+    // checked once, in format(): a consteval check runs again at every call site it is written at
     return printer.format(fmt, std::forward<Args>(args)...);
 }
 
@@ -1215,7 +1215,7 @@ public:
              typename... Args>
     static constexpr void staticPrint(sc::StringConstant<chars...> fmt,
                                       Args&&... args) {
-        checkFormatString<decltype(args)...>(fmt);
+        // checked once, in printAt(): a consteval check runs again at every call site it is written at
         static_assert(
           requires { ComBackend::write(std::span<std::byte const>{}); },
           "staticPrint needs static ComBackend");
@@ -1229,7 +1229,7 @@ public:
     static constexpr void staticPrint(SiteId                       site,
                                       sc::StringConstant<chars...> fmt,
                                       Args&&... args) {
-        checkFormatString<decltype(args)...>(fmt);
+        // checked once, in printAt(): a consteval check runs again at every call site it is written at
         static_assert(
           requires { ComBackend::write(std::span<std::byte const>{}); },
           "staticPrint needs static ComBackend");

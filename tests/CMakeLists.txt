@@ -146,7 +146,9 @@ set(fmt_check_fail_cases
     13
     14
     15
-    16)
+    16
+    17
+    18)
 
 foreach(fail_case IN LISTS fmt_check_fail_cases)
     add_executable(fmt_check_fail_${fail_case} EXCLUDE_FROM_ALL fmt_check_fail.cpp)

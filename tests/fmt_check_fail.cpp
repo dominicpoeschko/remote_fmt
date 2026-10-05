@@ -5,7 +5,9 @@
 #include "remote_fmt/remote_fmt.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <variant>
 #include <vector>
@@ -16,6 +18,15 @@ namespace {
 enum class Color : std::uint8_t { Red, Blue };
 
 struct OnlyRemoteFmt {};
+
+// a static backend, as uc_log's: what staticPrint (the UC_LOG path) needs
+struct StaticBackend {
+    static void write(std::span<std::byte const>) {}
+};
+
+struct InstanceBackend {
+    void write(std::span<std::byte const>) {}
+};
 }   // namespace
 
 void failCase();
@@ -91,6 +102,15 @@ void failCase() {
 #elif REMOTE_FMT_FAIL_CASE == 16
     // an element fmt cannot check leaves the range's own spec checked
     remote_fmt::checkFormatString<std::vector<std::chrono::milliseconds>>("{:x}"_sc);
+
+#elif REMOTE_FMT_FAIL_CASE == 17
+    // through staticPrint, the path every UC_LOG line takes (checked once, in printAt)
+    remote_fmt::Printer<StaticBackend>::staticPrint("{:s}"_sc, 1);
+
+#elif REMOTE_FMT_FAIL_CASE == 18
+    // through format_to, the path a formatter takes (checked once, in format)
+    remote_fmt::Printer<InstanceBackend> printer{};
+    remote_fmt::format_to(printer, "{:s}"_sc, 1);
 
 #else
     #error "REMOTE_FMT_FAIL_CASE must name a case defined in this file"
