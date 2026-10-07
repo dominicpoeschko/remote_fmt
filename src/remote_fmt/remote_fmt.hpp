@@ -1186,10 +1186,93 @@ private:
         beginRecord();
         printHelper(typeId);
         appendSized(rangeSize, id, [&](auto const&... valueArgs) { printHelper(valueArgs...); });
-        (formatter<std::remove_cvref_t<Args>>{}.format(std::forward<Args>(args), *this), ...);
+        formatArguments(std::forward<Args>(args)...);
         endRecord();
     }
 
+public:
+    // A cataloged record in three pieces, for a caller that shares its start and its end between
+    // argument lists (uc_log's RecordFrame): beginCataloged, any number of formatArguments, then
+    // endCataloged. checkCataloged is the compile-time half, which needs the string and makes no
+    // code.
+    constexpr void beginCataloged(SiteId site) {
+        static_assert(detail::maybeCataloged<detail::FmtStringType::cataloged_normal>()
+                        == detail::FmtStringType::cataloged_normal,
+                      "beginCataloged needs the catalog");
+        auto constexpr rangeSize
+          = detail::sizeToRangeSize(std::numeric_limits<std::uint16_t>::max());
+        auto constexpr typeId
+          = detail::fmtStringTypeIdentifier<detail::FmtStringType::cataloged_normal>(rangeSize);
+
+        beginRecord();
+        printHelper(typeId);
+        appendSized(rangeSize, site.id, [&](auto const&... valueArgs) {
+            printHelper(valueArgs...);
+        });
+    }
+
+    template<typename... Args>
+    constexpr void formatArguments(Args&&... args) {
+        (formatter<std::remove_cvref_t<Args>>{}.format(std::forward<Args>(args), *this), ...);
+    }
+
+    constexpr void endCataloged() { endRecord(); }
+
+    // A sub format string's header alone, for a formatter that produces the arguments in a loop
+    // (Kvasir's register formatter: one table-driven loop over the fields instead of a copy of
+    // the argument list per register). The caller vouches for the count and the kinds of the
+    // arguments that follow - nothing checks them here. Without a catalog the string goes
+    // inline, as format() sends it.
+    template<char... chars>
+    constexpr void beginSub(sc::StringConstant<chars...> fmt) {
+        constexpr auto ft = detail::maybeCataloged<detail::FmtStringType::cataloged_sub>();
+        if constexpr(ft == detail::FmtStringType::sub) {
+            auto constexpr stringView = std::string_view{fmt};
+            auto constexpr rangeSize  = detail::sizeToRangeSize(stringView.size());
+            auto constexpr typeId     = detail::fmtStringTypeIdentifier<ft>(rangeSize);
+            printHelper(typeId);
+            appendSized(rangeSize, stringView.size(), [&](auto const&... valueArgs) {
+                printHelper(valueArgs...);
+            });
+            lowprint(stringView);
+        } else {
+            auto constexpr rangeSize
+              = detail::sizeToRangeSize(std::numeric_limits<std::uint16_t>::max());
+            auto constexpr typeId = detail::fmtStringTypeIdentifier<ft>(rangeSize);
+            printHelper(typeId);
+#ifdef __clang__
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wundefined-func-template"
+#endif
+            appendSized(rangeSize, catalog<decltype(fmt)>(), [&](auto const&... valueArgs) {
+                printHelper(valueArgs...);
+            });
+#ifdef __clang__
+    #pragma clang diagnostic pop
+#endif
+        }
+    }
+
+    // A cataloged string by its id, as formatter<StringConstant> sends one: for a name chosen at
+    // run time out of a table of ids (an enumerator's name in the register formatter).
+    constexpr void catalogedString(catalog_id id) {
+        static_assert(use_catalog, "catalogedString needs the catalog");
+        auto constexpr rangeSize
+          = detail::sizeToRangeSize(std::numeric_limits<std::uint16_t>::max());
+        auto constexpr typeIdentifier
+          = detail::rangeTypeIdentifier<detail::RangeType::cataloged_string,
+                                        detail::RangeLayout::compact>(rangeSize);
+        printHelper(typeIdentifier);
+        appendSized(rangeSize, id, [&](auto const&... valueArgs) { printHelper(valueArgs...); });
+    }
+
+    template<typename... Args,
+             char... chars>
+    static consteval void checkCataloged(sc::StringConstant<chars...> fmt) {
+        checkFormatString<Args...>(fmt);
+    }
+
+private:
     constexpr void beginRecord() {
         if constexpr(requires { ComBackend::initTransfer(); }) {
             ComBackend::initTransfer();
