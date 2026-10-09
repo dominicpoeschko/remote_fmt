@@ -15,6 +15,12 @@ using catalog_id = std::uint16_t;
 template<typename CFS>
 catalog_id catalog();
 
+/// The first of a run of consecutive ids, one per name in `NamesCFS` (the names joined with
+/// '\0'), in order: an enum's names as one block, so a name is `base + index` at run time
+/// instead of a switch over every enumerator. Generated like catalog<>.
+template<typename NamesCFS>
+catalog_id catalog_block();
+
 struct SiteId {
     catalog_id id;
 };

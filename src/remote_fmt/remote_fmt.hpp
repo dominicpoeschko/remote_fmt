@@ -625,6 +625,33 @@ struct formatter<char[N]> {
     }
 };
 
+#if __has_include(<enchantum/enchantum.hpp>)
+namespace detail {
+    /// An enum's names joined with '\0', as one string constant: the key of its catalog_block.
+    template<typename E>
+    struct EnumNames {
+        static constexpr std::size_t size = [] {
+            std::size_t n = 0;
+            for(auto const name : enchantum::names<E>) { n += name.size() + 1; }
+            return n - 1;   // no separator after the last name
+        }();
+
+        static constexpr std::array<char, size> chars = [] {
+            std::array<char, size> out{};
+            std::size_t            k = 0;
+            for(auto const name : enchantum::names<E>) {
+                if(k != 0) { out[k++] = '\0'; }
+                for(auto const c : name) { out[k++] = c; }
+            }
+            return out;
+        }();
+
+        static constexpr auto names
+          = sc::create([]() { return std::string_view{chars.data(), chars.size()}; });
+    };
+}   // namespace detail
+#endif
+
 template<typename T>
     requires std::is_enum_v<T> && (!std::is_same_v<std::byte, T>)
 struct formatter<T> {
@@ -646,15 +673,34 @@ private:
     // The name never travels: enum_switch turns the runtime value into a compile-time constant, so
     // the string is a StringConstant and only its catalog id goes on the wire. This is why
     // enchantum::to_string_bitflag is unusable here - it builds its result at runtime.
+    //
+    // With the catalog the names are one block of consecutive ids (catalog_block): the name of
+    // `value` is the block's base plus its index, no switch over every enumerator (one case per
+    // enumerator was 14 bytes; GpioId's formatter alone was 2.5 KB). Callers pass a value
+    // enchantum knows (contains, or one of values<T>).
     template<typename Printer>
     static constexpr void formatEnumerator(T const& value,
                                            Printer& printer) {
-        enchantum_ext::enum_switch(value, [&](auto enumValue) {
-            static constexpr T    enumConstant = enumValue;
-            static constexpr auto get
-              = sc::create([]() { return enchantum::to_string(enumConstant); });
-            formatter<std::remove_cvref_t<decltype(get)>>{}.format(get, printer);
-        });
+        if constexpr(use_catalog && enchantum::count<T> != 0) {
+            using Names      = std::remove_cvref_t<decltype(detail::EnumNames<T>::names)>;
+            auto const index = enchantum::enum_to_index(value);
+            if(!index) { return asInt(value, printer); }
+    #ifdef __clang__
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wundefined-func-template"
+    #endif
+            printer.catalogedString(static_cast<catalog_id>(catalog_block<Names>() + *index));
+    #ifdef __clang__
+        #pragma clang diagnostic pop
+    #endif
+        } else {
+            enchantum_ext::enum_switch(value, [&](auto enumValue) {
+                static constexpr T    enumConstant = enumValue;
+                static constexpr auto get
+                  = sc::create([]() { return enchantum::to_string(enumConstant); });
+                formatter<std::remove_cvref_t<decltype(get)>>{}.format(get, printer);
+            });
+        }
     }
 
     // A combined value has no single name, so the set flags travel as a counted sequence of

@@ -171,6 +171,91 @@ class AssignTests(unittest.TestCase):
         self.assertEqual(sorted(ids.values()), list(range(16)))
 
 
+def block_symbol(names):
+    """The demangled symbol remote_fmt::catalog_block<> gets for an enum's names."""
+    joined = "\0".join(names)
+    chars = ", ".join(f"(char){b}" for b in joined.encode("utf-8"))
+    return f"unsigned short remote_fmt::catalog_block<sc::StringConstant<{chars}>>()"
+
+
+class BlockTests(unittest.TestCase):
+    NAMES = [b"IDLE", b"RUN", b"FAULT", b"OFF"]
+    JOINED = b"\0".join(NAMES)
+
+    def test_a_block_symbol_parses_to_the_joined_names(self):
+        sym = block_symbol([n.decode() for n in self.NAMES])
+        self.assertTrue(gen.is_block(sym))
+        self.assertEqual(gen.parse_symbol(sym), self.JOINED)
+        self.assertEqual(gen.block_names(self.JOINED), self.NAMES)
+
+    def test_blocks_and_single_strings_are_grouped_apart(self):
+        syms = [symbol("hello"), block_symbol(["A", "B"])]
+        self.assertEqual(list(gen.group_texts(syms)), [b"hello"])
+        self.assertEqual(list(gen.group_texts(syms, blocks=True)), [b"A\0B"])
+
+    def test_a_block_gets_consecutive_ids(self):
+        ids, bases = gen.assign_all({}, {self.JOINED: []})
+        base = bases[self.JOINED]
+        self.assertEqual(
+            base, min(gen.preferred_id(self.JOINED), gen.ID_COUNT - 4))
+        self.assertEqual(ids, {})
+
+    def test_single_strings_stay_out_of_a_block(self):
+        base = gen.assign_all({}, {self.JOINED: []})[1][self.JOINED]
+        # strings whose preferred slot lies inside the block's run
+        inside = []
+        for i in range(200000):
+            t = f"s{i}".encode()
+            if base <= gen.preferred_id(t) < base + len(self.NAMES):
+                inside.append(t)
+            if len(inside) == 3:
+                break
+        ids, bases = gen.assign_all({t: [] for t in inside}, {self.JOINED: []})
+        self.assertEqual(bases[self.JOINED], base, "the block keeps its place")
+        run = set(range(base, base + len(self.NAMES)))
+        self.assertFalse(run & set(ids.values()))
+        self.assertEqual(len(set(ids.values())), len(inside))
+
+    def test_an_unrelated_new_string_moves_no_block(self):
+        blocks = {self.JOINED: [], b"X\0Y\0Z": []}
+        texts = {b"one": [], b"two": []}
+        before = gen.assign_all(texts, blocks)
+        after = gen.assign_all({**texts, b"three": []}, blocks)
+        self.assertEqual(before[1], after[1])
+        self.assertEqual(before[0][b"one"], after[0][b"one"])
+        self.assertEqual(before[0][b"two"], after[0][b"two"])
+
+    def test_two_blocks_do_not_overlap(self):
+        a, b = self.JOINED, b"\0".join(f"N{i}".encode() for i in range(40))
+        bases = gen.assign_all({}, {a: [], b: []})[1]
+        ra = set(range(bases[a], bases[a] + 4))
+        rb = set(range(bases[b], bases[b] + 40))
+        self.assertFalse(ra & rb)
+        self.assertLessEqual(bases[b] + 40, gen.ID_COUNT)
+
+    def test_a_block_counts_against_the_capacity(self):
+        big = b"\0".join(f"N{i}".encode() for i in range(gen.ID_COUNT))
+        with self.assertRaises(ValueError):
+            gen.assign_all({b"one more": []}, {big: []})
+
+    def test_the_catalog_has_one_entry_per_name(self):
+        sym = block_symbol([n.decode() for n in self.NAMES])
+        blocks = {self.JOINED: [sym]}
+        ids, bases = gen.assign_all({b"hi": [symbol("hi")]}, blocks)
+        with tempfile.TemporaryDirectory() as d:
+            cpp = gen.write_outputs(
+                ids, {b"hi": [symbol("hi")]}, d, "t", bases, blocks)
+            entries = json.load(open(os.path.join(d, "t_string_constants.json")))[
+                "StringConstants"]
+            source = open(cpp).read()
+        base = bases[self.JOINED]
+        for i, n in enumerate(self.NAMES):
+            self.assertIn([base + i, n.decode()], entries)
+        self.assertIn(f"template<>{sym}{{return {base};}}", source)
+        self.assertEqual([e[0] for e in entries], sorted(e[0]
+                         for e in entries))
+
+
 class GroupTests(unittest.TestCase):
     def test_format_string_and_argument_share_one_text(self):
         texts = gen.group_texts(

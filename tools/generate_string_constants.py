@@ -29,9 +29,19 @@ def parse_StringConstant(s):
     return bytes(literal)
 
 
+SINGLE_PREFIX = "unsigned short remote_fmt::catalog<"
+BLOCK_PREFIX = "unsigned short remote_fmt::catalog_block<"
+
+
+def is_block(symbol):
+    """A catalog_block<SC>: SC is several names joined with '\\0', one id each, consecutive."""
+    return symbol.startswith(BLOCK_PREFIX)
+
+
 def parse_symbol(symbol):
     """Extract the string constant's bytes from a symbol name."""
-    symbol = symbol.removeprefix("unsigned short remote_fmt::catalog<")
+    symbol = symbol.removeprefix(BLOCK_PREFIX) if is_block(
+        symbol) else symbol.removeprefix(SINGLE_PREFIX)
     symbol = symbol.removesuffix(">")
 
     result = parse_StringConstant(symbol)
@@ -85,8 +95,10 @@ def collect_symbols(nm, objects):
             print("Error: nm command not found.", file=sys.stderr)
             sys.exit(1)
         for line in iter(x.stdout.splitlines()):
-            if line.strip().startswith("U unsigned short remote_fmt::catalog<sc::StringConstant<"):
-                symbols.append(line.strip().removeprefix("U "))
+            line = line.strip()
+            if line.startswith("U " + SINGLE_PREFIX + "sc::StringConstant<") \
+                    or line.startswith("U " + BLOCK_PREFIX + "sc::StringConstant<"):
+                symbols.append(line.removeprefix("U "))
 
     return symbols
 
@@ -103,17 +115,25 @@ def invalid_utf8(texts):
     return bad
 
 
-def group_texts(symbols):
+def group_texts(symbols, blocks=False):
     """Map each string's bytes to its symbols (catalog<SC> and catalog<SC const&> share an id).
-    An unparsable symbol is left out, so the link fails instead of decoding the wrong string."""
+    An unparsable symbol is left out, so the link fails instead of decoding the wrong string.
+    With blocks, only the catalog_block<> symbols, else only the single strings'."""
     texts = {}
     for s in sorted(set(symbols)):
+        if is_block(s) != blocks:
+            continue
         text = parse_symbol(s)
         if text is None:
             print(f"Skipping invalid symbol: {s}", file=sys.stderr)
             continue
         texts.setdefault(text, []).append(s)
     return texts
+
+
+def block_names(joined):
+    """A block's names: the string split at its '\\0' separators."""
+    return joined.split(b"\0")
 
 
 # Ids are hashes of the string (without a log line's line number), so a new string leaves the
@@ -139,25 +159,50 @@ def preferred_id(key):
     return (h ^ (h >> 16)) & (ID_COUNT - 1)
 
 
-def assign_ids(texts):
-    if len(texts) > ID_COUNT:
+def assign_all(texts, blocks):
+    """Ids for the single strings and a base id for each block (a run of consecutive ids, one
+    per name: the firmware sends base + the enumerator's index). Blocks go first, each at the
+    first free run at or after its hash, so they move only when another block takes its place;
+    the single strings then fill around them as before."""
+    needed = len(texts) + sum(len(block_names(b)) for b in blocks)
+    if needed > ID_COUNT:
         raise ValueError(
-            f"{len(texts)} string constants, the catalog has room for {ID_COUNT}")
+            f"{needed} string constants, the catalog has room for {ID_COUNT}")
+    taken = set()
+    bases = {}
+    for start, joined in sorted((preferred_id(b), b) for b in blocks):
+        n = len(block_names(joined))
+        last = ID_COUNT - n   # the highest base that still fits
+        base = min(start, last)
+        for _ in range(last + 1):
+            if not any(i in taken for i in range(base, base + n)):
+                break
+            base = base + 1 if base < last else 0
+        else:
+            raise ValueError(
+                f"no run of {n} free ids for a block of {n} names")
+        taken.update(range(base, base + n))
+        bases[joined] = base
     # identical lines in one function share a key: they go by line number, as numbers
     order = sorted((preferred_id(id_key(t)), id_key(t),
                    line_number(t), t) for t in texts)
-    taken = set()
     ids = {}
     for slot, _, _, text in order:
         while slot in taken:
             slot = (slot + 1) % ID_COUNT
         taken.add(slot)
         ids[text] = slot
-    return ids
+    return ids, bases
 
 
-def write_outputs(ids, texts, out_dir, target_name):
+def assign_ids(texts):
+    return assign_all(texts, {})[0]
+
+
+def write_outputs(ids, texts, out_dir, target_name, bases=None, blocks=None):
     """Write the catalog .cpp and .json; returns the .cpp's path."""
+    bases = bases or {}
+    blocks = blocks or {}
     outfilename = os.path.join(
         out_dir, f"{target_name}_string_constants.cpp")
     jsonfilename = os.path.join(
@@ -177,6 +222,16 @@ def write_outputs(ids, texts, out_dir, target_name):
                     outfile.write(str(id))
                     outfile.write(";}\n")
                 indexmap.append([id, text.decode("utf-8")])
+            for joined, base in sorted(bases.items(), key=lambda item: item[1]):
+                for s in blocks[joined]:
+                    outfile.write("template<>")
+                    outfile.write(s)
+                    outfile.write("{return ")
+                    outfile.write(str(base))
+                    outfile.write(";}\n")
+                for i, name in enumerate(block_names(joined)):
+                    indexmap.append([base + i, name.decode("utf-8")])
+            indexmap.sort(key=lambda entry: entry[0])
             outfile.write("\n")
     except IOError as e:
         print(f"Error writing C++ file '{outfilename}': {e}", file=sys.stderr)
@@ -279,20 +334,23 @@ def main(argv=None):
         print(f"Error: Compiler '{args.compiler}' not found.", file=sys.stderr)
         sys.exit(1)
 
-    texts = group_texts(collect_symbols(args.nm, args.objects))
-    bad = invalid_utf8(texts)
+    symbols = collect_symbols(args.nm, args.objects)
+    texts = group_texts(symbols)
+    blocks = group_texts(symbols, blocks=True)
+    bad = invalid_utf8(list(texts) + list(blocks))
     for text in bad:
         print(
             f"Error: string constant is not UTF-8: {text!r}", file=sys.stderr)
     if bad:
         sys.exit(1)
     try:
-        ids = assign_ids(texts)
+        ids, bases = assign_all(texts, blocks)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    cpp_file = write_outputs(ids, texts, args.out_dir, args.target_name)
+    cpp_file = write_outputs(ids, texts, args.out_dir,
+                             args.target_name, bases, blocks)
     compile_catalog(args.compiler, cpp_file, args.out_dir, args.target_name,
                     args.source_dir, args.flags)
 

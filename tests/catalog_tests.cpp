@@ -30,9 +30,9 @@ static constexpr auto fmtString{"Test {}"_sc};
 static constexpr auto argString{"hello"_sc};
 
 // A bitflag enum. test_roundtrip covers the rendering, but it builds with the catalog OFF, so the
-// combined-value path is only exercised here: each set flag's name is its own StringConstant and
-// therefore its own catalog id, and the parser has to resolve every one of them before it can join
-// them into "read|write".
+// combined-value path is only exercised here: each set flag's name is its id in the enum's block
+// (catalog_block: one run of ids for all of Perm's names, base + index), and the parser has to
+// resolve every one of them before it can join them into "read|write".
 enum struct Perm : std::uint8_t { read = 1 << 0, write = 1 << 1 };
 
 constexpr Perm operator|(Perm a,
@@ -58,12 +58,17 @@ constexpr Perm operator&(Perm a,
 }
 
 static constexpr auto bitflagFmtString{"Perm {}"_sc};
-static constexpr auto readName{sc::create([]() { return enchantum::to_string(Perm::read); })};
-static constexpr auto writeName{sc::create([]() { return enchantum::to_string(Perm::write); })};
 
 template<typename T>
 remote_fmt::catalog_id idOf(T const&) {
     return remote_fmt::catalog<T>();
+}
+
+/// An enumerator's name: its index in the enum's block.
+static remote_fmt::catalog_id idOf(Perm p) {
+    using Names = std::remove_cvref_t<decltype(remote_fmt::detail::EnumNames<Perm>::names)>;
+    return static_cast<remote_fmt::catalog_id>(remote_fmt::catalog_block<Names>()
+                                               + *enchantum::enum_to_index(p));
 }
 
 namespace {
@@ -94,8 +99,8 @@ stringConstantsMap() {
       {       idOf(fmtString),        std::string{std::string_view{fmtString}}},
       {       idOf(argString),        std::string{std::string_view{argString}}},
       {idOf(bitflagFmtString), std::string{std::string_view{bitflagFmtString}}},
-      {        idOf(readName),         std::string{std::string_view{readName}}},
-      {       idOf(writeName),        std::string{std::string_view{writeName}}}
+      {      idOf(Perm::read),                             std::string{"read"}},
+      {     idOf(Perm::write),                            std::string{"write"}}
     };
     return map;
 }
@@ -166,7 +171,7 @@ int main() {
         auto const& buffer = printer.get_com_backend().memory;
 
         auto partialMap = stringConstantsMap();
-        partialMap.erase(idOf(writeName));
+        partialMap.erase(idOf(Perm::write));
 
         bool errorReported = false;
         auto const [message, remaining, discarded]
@@ -178,8 +183,8 @@ int main() {
     }
 
     {
-        CHECK(idOf(fmtString) != idOf(argString) && idOf(readName) != idOf(writeName),
-              "one tag per string");
+        CHECK(idOf(fmtString) != idOf(argString) && idOf(Perm::read) + 1 == idOf(Perm::write),
+              "one tag per string, an enum's names consecutive");
         CHECK(remote_fmt::catalog<decltype(fmtString) const&>() == idOf(fmtString),
               "const& asks for the same tag");
     }
