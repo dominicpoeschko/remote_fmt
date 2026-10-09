@@ -132,7 +132,7 @@ def split_site(mangled):
 
 
 # Neither demangler reads every name, so what one cannot read goes to the other (measured on 911
-# enclosing functions of 300 images, 2026-09-28):
+# enclosing functions of 300 images):
 # - llvm-cxxfilt (22) reads no template parameter (`T_`) in the parameters of a member template of
 #   a local class: `main::$_7::operator()<X>(X const&)`, a generic lambda in main (2 of 911);
 # - GNU c++filt (binutils 2.47) gives up on names past ~3.7 KB (489 of 911) and reads no `Tn<type>`
@@ -189,7 +189,7 @@ def run_demangler(tool, names):
 
 # The catalog is loaded by every decoder (a hub, a TUI that has it built in), and one signature
 # whose template arguments spell out a board's whole device configuration ran to 1.9 MB -- 170 MB
-# for one image (i2c_testing hwtest; 0.5 MB now). So template argument lists are abbreviated,
+# for one image (0.5 MB now). So template argument lists are abbreviated,
 # innermost first, measured with their qualifiers dropped as uc_log's qualifiedFunction reads them.
 # It shows the arguments of the class a function belongs to, and nothing else:
 # - that list (`App<...>::run`) keeps its arguments up to MAX_ARGS, more than uc_log's 100, and is
@@ -198,9 +198,8 @@ def run_demangler(tool, names):
 #   return type's) longer than MAX_NESTED_ARGS is written "<…>";
 # - a template operator's list is shown as it is (`X::operator()<Y<int>>::lambda`, up to the name's
 #   192 characters), so it stays whole up to MAX_OPERATOR_ARGS.
-# So the module and short name uc_log derives stay the same (checked against every catalog of
-# kvasir_work on 2026-09-28 with namesOfDemangled). The nested limit is the catalog's size:
-# i2c_testing hwtest 547 KB at 40, 498 KB at 24.
+# So the module and short name uc_log derives stay the same (checked against real catalogs with
+# namesOfDemangled). The nested limit is the catalog's size: that image's 547 KB at 40, 498 KB at 24.
 MAX_NESTED_ARGS = 24
 MAX_ARGS = 200
 MAX_OPERATOR_ARGS = 256
@@ -279,7 +278,7 @@ def name_list(inner, keep):
 
 # A nested list at least this long is remembered by abbreviated(): a board's signature repeats the
 # same device types hundreds of times, and a nested list's abbreviation depends on its own text
-# only, so a repeat is skipped with one compare (i2c_testing hwtest: 64 s -> 0.1 s).
+# only, so a repeat is skipped with one compare (one large image: 64 s -> 0.1 s).
 MEMO_MIN = 256
 MEMO_KEY = 64
 

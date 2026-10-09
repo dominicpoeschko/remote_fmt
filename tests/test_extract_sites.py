@@ -62,7 +62,7 @@ class SplitTests(unittest.TestCase):
     def test_a_substituted_string_constant(self):
         # A function whose own template argument is a StringConstant: its site's string type
         # is `N S1_ IJ...E E` (sc::StringConstant substituted), as g++ 16 and clang++ 22 both
-        # mangled it on 2026-09-28.
+        # mangle it.
         self.assertEqual(ex.split_site(
             "_ZZZ1fIN2sc14StringConstantIJLc120EEEEEPcvENKUlTyT_E_clINS1_IJLc104ELc105EEEEEE"
             "DaS4_E19REMOTE_FMT_SITE_TAG"),
