@@ -404,6 +404,17 @@ def demangle_sites(names, demangler):
     return parts
 
 
+FRAME_CHECK_MARKER = "remote_fmt_frame_check"
+
+
+def frame_check_of(image):
+    """Whether the image was built with REMOTE_FMT_FRAME_CHECK: remote_fmt.hpp then puts the marker symbol into the
+    site section (kept by the linker script's KEEP), so a reader of the catalog knows - never guesses - whether the
+    image's frames carry the CRC."""
+    _, sections, symbols = read_symbols(image)
+    return any(name == FRAME_CHECK_MARKER and shndx in sections for name, _, shndx in symbols)
+
+
 def sites_of(image, demangler):
     """({id: string bytes}, {id: signature}) of the call sites of an ELF image."""
     # as catalog.hpp siteId() counts: from address 0 with 32-bit pointers, from siteAnchor with 64
@@ -445,7 +456,7 @@ def invalid_utf8(strings):
     return bad
 
 
-def merge(path, strings, sites):
+def merge(path, strings, sites, frame_check=False):
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     taken = {entry[0] for entry in data.setdefault("StringConstants", [])}
@@ -456,6 +467,9 @@ def merge(path, strings, sites):
         data["StringConstants"].append(
             [site_id, strings[site_id].decode("utf-8")])
     data["Sites"] = {str(site_id): sites[site_id] for site_id in sorted(sites)}
+    # true: every frame of this image starts with 0x56 and carries a CRC-8 (remote_fmt.hpp REMOTE_FMT_FRAME_CHECK); a
+    # reader decodes it with the check required, and refuses an unchecked frame; false or absent: no check
+    data["FrameCheck"] = frame_check
     tmp = path + ".tmp"
     # UTF-8, not "\u2026": a signature has an ellipsis in every abbreviated list
     with open(tmp, "w", encoding="utf-8") as f:
@@ -474,14 +488,15 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         with open(args.elf, "rb") as f:
-            strings, sites = sites_of(f.read(), find_demangler(args.nm))
+            image = f.read()
+        strings, sites = sites_of(image, find_demangler(args.nm))
         bad = invalid_utf8(strings)
         for text in bad:
             print(
                 f"extract_sites: string constant is not UTF-8: {text!r}", file=sys.stderr)
         if bad:
             return 1
-        merge(args.json, strings, sites)
+        merge(args.json, strings, sites, frame_check_of(image))
     except (Error, OSError, ValueError, struct.error, subprocess.CalledProcessError) as e:
         print(f"extract_sites: {args.elf}: {e}", file=sys.stderr)
         return 1

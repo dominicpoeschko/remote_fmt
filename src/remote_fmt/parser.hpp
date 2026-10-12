@@ -1478,6 +1478,21 @@ namespace detail {
     };
 }   // namespace detail
 
+// What the reader knows about the image's frames, from its catalog ("FrameCheck", tools/extract_sites.py): `required`
+// - the image checks every frame, so only checked frames (0x56) are frames, and an unchecked one is refused; `none` -
+// an image built without the check: only 0x55 frames; `either` - nothing known (tests, a catalog of unknown age).
+enum class FrameCheck { either, required, none };
+
+constexpr bool isFrameStart(std::byte  b,
+                            FrameCheck expect) {
+    switch(expect) {
+    case FrameCheck::required: return b == protocol::Checked_start_marker;
+    case FrameCheck::none:     return b == protocol::Start_marker;
+    case FrameCheck::either:   break;
+    }
+    return protocol::isStartMarker(b);
+}
+
 struct ParsedMessage {
     std::optional<std::string> message;
     std::span<std::byte const> remaining;
@@ -1489,57 +1504,114 @@ template<typename ErrorMessageF>
 inline ParsedMessage parseMessage(std::span<std::byte const>             buffer,
                                   std::unordered_map<std::uint16_t,
                                                      std::string> const& stringConstantsMap,
-                                  ErrorMessageF&&                        errorMessagef) {
+                                  ErrorMessageF&&                        errorMessagef,
+                                  FrameCheck expect = FrameCheck::either) {
     std::size_t unparsed_bytes{};
-    while(!buffer.empty()) {
-        auto const        iterator = std::ranges::find(buffer, protocol::Start_marker);
-        std::size_t const offset
-          = static_cast<std::size_t>(std::distance(buffer.begin(), iterator));
-        buffer = buffer.subspan(offset);
-        unparsed_bytes += offset;
-        if(2 > buffer.size()
-           || detail::parseFmtStringTypeIdentifier(buffer[1], detail::FmtStringType::normal)
-           || detail::parseFmtStringTypeIdentifier(buffer[1],
-                                                   detail::FmtStringType::cataloged_normal))
+    auto const  isStart = [expect](std::byte b) { return isFrameStart(b, expect); };
+    // a frame of the other kind than the catalog says (a wrong catalog, an old image): refused, said once a call
+    bool       foreignTold = false;
+    auto const foreign     = [&](std::span<std::byte const> at) {
+        if(foreignTold || expect == FrameCheck::either || at.size() < 2 || isStart(at[0])
+           || !protocol::isStartMarker(at[0]))
         {
-            break;
+            return;
         }
-        unparsed_bytes += 1;
-        buffer = buffer.subspan(1);
-    }
-
-    bool const contains_end = std::ranges::find(buffer, protocol::End_marker) != buffer.end();
-
-    if(2 > buffer.size() || !contains_end) { return {std::nullopt, buffer, unparsed_bytes, {}}; }
-
-    detail::FmtStringType const fmtStringType = [&]() {
-        if(detail::parseFmtStringTypeIdentifier(buffer[1], detail::FmtStringType::normal)) {
-            return detail::FmtStringType::normal;
+        if(detail::parseFmtStringTypeIdentifier(at[1], detail::FmtStringType::normal)
+           || detail::parseFmtStringTypeIdentifier(at[1], detail::FmtStringType::cataloged_normal))
+        {
+            foreignTold = true;
+            errorMessagef(
+              expect == FrameCheck::required
+                ? std::string{"an unchecked frame from an image whose catalog says it checks its "
+                              "frames: "
+                              "refused (the catalog is not this image's?)"}
+                : std::string{
+                    "a checked frame from an image whose catalog says it has no frame check: "
+                    "refused (the catalog is not this image's?)"});
         }
-        return detail::FmtStringType::cataloged_normal;
-    }();
+    };
+    while(true) {
+        while(!buffer.empty()) {
+            for(std::size_t k = 0; k + 1 < buffer.size() && !foreignTold && !isStart(buffer[k]);
+                ++k)
+            {
+                if(protocol::isStartMarker(buffer[k])) { foreign(buffer.subspan(k)); }
+            }
+            auto const        iterator = std::ranges::find_if(buffer, isStart);
+            std::size_t const offset
+              = static_cast<std::size_t>(std::distance(buffer.begin(), iterator));
+            buffer = buffer.subspan(offset);
+            unparsed_bytes += offset;
+            if(2 > buffer.size()
+               || detail::parseFmtStringTypeIdentifier(buffer[1], detail::FmtStringType::normal)
+               || detail::parseFmtStringTypeIdentifier(buffer[1],
+                                                       detail::FmtStringType::cataloged_normal))
+            {
+                break;
+            }
+            unparsed_bytes += 1;
+            buffer = buffer.subspan(1);
+        }
 
-    detail::Parser parser{std::forward<ErrorMessageF>(errorMessagef)};
-    auto const     optionalStr
-      = parser.parseFmt(std::next(buffer.begin()), buffer.end(), fmtStringType, stringConstantsMap);
+        bool const contains_end = std::ranges::find(buffer, protocol::End_marker) != buffer.end();
 
-    if(!optionalStr) { return {std::nullopt, buffer, unparsed_bytes, {}}; }
-    if(optionalStr->pos == buffer.end() || *optionalStr->pos != protocol::End_marker) {
-        return {std::nullopt, buffer, unparsed_bytes, {}};
+        if(2 > buffer.size() || !contains_end) {
+            return {std::nullopt, buffer, unparsed_bytes, {}};
+        }
+
+        bool const checked = buffer[0] == protocol::Checked_start_marker;
+
+        detail::FmtStringType const fmtStringType = [&]() {
+            if(detail::parseFmtStringTypeIdentifier(buffer[1], detail::FmtStringType::normal)) {
+                return detail::FmtStringType::normal;
+            }
+            return detail::FmtStringType::cataloged_normal;
+        }();
+
+        detail::Parser parser{errorMessagef};
+        auto const     optionalStr = parser.parseFmt(std::next(buffer.begin()),
+                                                     buffer.end(),
+                                                     fmtStringType,
+                                                     stringConstantsMap);
+
+        if(!optionalStr) { return {std::nullopt, buffer, unparsed_bytes, {}}; }
+        auto end = optionalStr->pos;
+        if(checked) {
+            // the CRC byte, then the end marker; a frame that does not add up is no frame: skip its start
+            // marker and look for the next one, rather than wait for bytes that would not help
+            if(end == buffer.end() || std::next(end) == buffer.end()) {
+                return {std::nullopt, buffer, unparsed_bytes, {}};
+            }
+            auto const covered = static_cast<std::size_t>(std::distance(buffer.begin(), end));
+            auto const want
+              = protocol::crcFinal(protocol::crcOver(protocol::CrcInit, buffer.first(covered)));
+            if(std::to_integer<std::uint8_t>(*end) != want
+               || *std::next(end) != protocol::End_marker)
+            {
+                errorMessagef(fmt::format("frame check failed: a damaged frame of {} bytes dropped",
+                                          covered + 2));
+                unparsed_bytes += 1;
+                buffer = buffer.subspan(1);
+                continue;
+            }
+            ++end;
+        }
+        if(end == buffer.end() || *end != protocol::End_marker) {
+            return {std::nullopt, buffer, unparsed_bytes, {}};
+        }
+
+        std::optional<catalog_id> id;
+        if(fmtStringType == detail::FmtStringType::cataloged_normal) {
+            auto const rangeSize = detail::parseFmtStringTypeIdentifier(buffer[1], fmtStringType);
+            auto const size      = parser.extractSize(std::next(buffer.begin(), 2),
+                                                      buffer.end(),
+                                                      detail::rangeSizeToTypeSize(*rangeSize));
+            id                   = static_cast<catalog_id>(size->first);
+        }
+
+        buffer = buffer.subspan(static_cast<std::size_t>(std::distance(buffer.begin(), end + 1)));
+        return {optionalStr->str, buffer, unparsed_bytes, id};
     }
-
-    std::optional<catalog_id> id;
-    if(fmtStringType == detail::FmtStringType::cataloged_normal) {
-        auto const rangeSize = detail::parseFmtStringTypeIdentifier(buffer[1], fmtStringType);
-        auto const size      = parser.extractSize(std::next(buffer.begin(), 2),
-                                                  buffer.end(),
-                                                  detail::rangeSizeToTypeSize(*rangeSize));
-        id                   = static_cast<catalog_id>(size->first);
-    }
-
-    buffer = buffer.subspan(
-      static_cast<std::size_t>(std::distance(buffer.begin(), optionalStr->pos + 1)));
-    return {optionalStr->str, buffer, unparsed_bytes, id};
 }
 
 template<typename ErrorMessageF>

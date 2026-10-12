@@ -1366,7 +1366,69 @@ void quantityRoundTrips() {
 
 }   // namespace
 
+// The frame check (REMOTE_FMT_FRAME_CHECK, on by default): a checked frame starts with 0x56 and carries a CRC-8 before
+// its end marker; one flipped bit drops the frame with a message instead of decoding other text; a reader told the
+// image's kind of frame (the catalog's "FrameCheck") refuses the other kind loudly.
+static void frameCheck() {
+    static constexpr auto checkInput = [] {
+        std::array<std::byte, 9> bytes{};
+        for(std::size_t i = 0; i != bytes.size(); ++i) {
+            bytes[i] = static_cast<std::byte>('1' + i);
+        }
+        return bytes;
+    }();
+    static_assert(
+      remote_fmt::protocol::crcFinal(
+        remote_fmt::protocol::crcOver(remote_fmt::protocol::CrcInit, std::span{checkInput}))
+        == 0xDF,
+      "CRC-8/AUTOSAR check value");
+    auto const  frame  = serialize("frame {} {}"_sc, 42, "ok");
+    std::size_t errors = 0;
+    auto const  count  = [&errors](std::string_view) { ++errors; };
+    using remote_fmt::FrameCheck;
+#if REMOTE_FMT_FRAME_CHECK
+    CHECK(frame.front() == remote_fmt::protocol::Checked_start_marker,
+          "a checked frame by default");
+    for(auto const expect : {FrameCheck::either, FrameCheck::required}) {
+        errors       = 0;
+        auto const r = remote_fmt::parseMessage(std::span{frame}, emptyCatalog(), count, expect);
+        CHECK(r.message && *r.message == "frame 42 ok" && errors == 0, "a checked frame decodes");
+    }
+    errors = 0;
+    auto const n
+      = remote_fmt::parseMessage(std::span{frame}, emptyCatalog(), count, FrameCheck::none);
+    CHECK(!n.message && errors != 0, "a checked frame where the catalog says none: refused, said");
+    // every single bit flipped inside the frame (not the markers): dropped, said, never other text
+    std::size_t decodedWrong = 0;
+    std::size_t silent       = 0;
+    for(std::size_t i = 1; i + 1 < frame.size(); ++i) {
+        for(int bit = 0; bit != 8; ++bit) {
+            auto damaged = frame;
+            damaged[i] ^= static_cast<std::byte>(1U << bit);
+            errors       = 0;
+            auto const d = remote_fmt::parseMessage(std::span{damaged},
+                                                    emptyCatalog(),
+                                                    count,
+                                                    FrameCheck::required);
+            if(d.message) { ++decodedWrong; }
+            // said: an error, or bytes counted as discarded (the reader reports those), or kept for more input
+            if(!d.message && errors == 0 && d.discarded == 0 && d.remaining.empty()) { ++silent; }
+        }
+    }
+    CHECK(decodedWrong == 0, "no damaged frame decodes");
+    CHECK(silent == 0, "every damaged frame is said");
+#else
+    CHECK(frame.front() == remote_fmt::protocol::Start_marker, "an unchecked frame");
+    errors = 0;
+    auto const r
+      = remote_fmt::parseMessage(std::span{frame}, emptyCatalog(), count, FrameCheck::required);
+    CHECK(!r.message && errors != 0,
+          "an unchecked frame where the catalog says checked: refused, said");
+#endif
+}
+
 int main() {
+    frameCheck();
     trivialRoundTrips();
     stringRoundTrips();
     rangeRoundTrips();

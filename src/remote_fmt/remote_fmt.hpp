@@ -137,7 +137,64 @@ namespace remote_fmt {
 namespace protocol {
     static constexpr std::byte Start_marker{0x55};
     static constexpr std::byte End_marker{0xAA};
+    // A checked frame (REMOTE_FMT_FRAME_CHECK): this start marker, the frame as usual, then one byte of CRC-8 over every
+    // byte from the start marker on, then the end marker. The parser takes both kinds of frame and drops a checked one
+    // whose CRC does not match, where an unchecked damaged frame often decodes as a valid one with other text.
+    static constexpr std::byte Checked_start_marker{0x56};
+
+    constexpr bool isStartMarker(std::byte b) {
+        return b == Start_marker || b == Checked_start_marker;
+    }
+
+    // CRC-8/AUTOSAR (polynomial 0x2F, init 0xFF, final xor 0xFF): Hamming distance 4 up to 119 data bits and 3 up to
+    // 2048 - every 1-, 2- and 3-bit error in a frame of up to 15 bytes, and every burst of 8 bits or less in any frame.
+    // A table of 16 entries, a nibble at a time: 16 bytes of flash.
+    inline constexpr std::uint8_t CrcInit = 0xFF;
+
+    constexpr std::uint8_t crcStep(std::uint8_t crc,
+                                   std::byte    b) {
+        constexpr std::array<std::uint8_t, 16> table = [] {
+            std::array<std::uint8_t, 16> t{};
+            for(unsigned n = 0; n < 16; ++n) {
+                unsigned c = n << 4U;
+                for(int k = 0; k < 4; ++k) {
+                    c = (c & 0x80U) != 0 ? ((c << 1U) ^ 0x2FU) & 0xFFU : (c << 1U) & 0xFFU;
+                }
+                t[n] = static_cast<std::uint8_t>(c);
+            }
+            return t;
+        }();
+        unsigned c = static_cast<unsigned>(crc) ^ std::to_integer<unsigned>(b);
+        c          = ((c << 4U) ^ table[c >> 4U]) & 0xFFU;
+        c          = ((c << 4U) ^ table[c >> 4U]) & 0xFFU;
+        return static_cast<std::uint8_t>(c);
+    }
+
+    constexpr std::uint8_t crcOver(std::uint8_t               crc,
+                                   std::span<std::byte const> bytes) {
+        for(auto const b : bytes) { crc = crcStep(crc, b); }
+        return crc;
+    }
+
+    constexpr std::uint8_t crcFinal(std::uint8_t crc) {
+        return static_cast<std::uint8_t>(crc ^ 0xFFU);
+    }
 }   // namespace protocol
+
+// Every frame carries the CRC-8 above (a wire change: a printer older than the checked start marker skips these
+// frames). On by default: a damaged frame is reported as damaged, never shown as text.
+#ifndef REMOTE_FMT_FRAME_CHECK
+    #define REMOTE_FMT_FRAME_CHECK 1
+#endif
+
+#if REMOTE_FMT_FRAME_CHECK
+// The image says that it checks its frames: one byte in the call-site section (not loaded on a target, kept by the
+// linker script's KEEP), which tools/extract_sites.py turns into "FrameCheck": true in the string catalog. A reader
+// then requires the check, and refuses an unchecked frame instead of trusting it.
+extern "C" {
+[[gnu::used, gnu::section("remote_fmt_sites.frame_check")]] inline char remote_fmt_frame_check = 1;
+}
+#endif
 
 #ifndef REMOTE_FMT_USE_CATALOG
 static constexpr bool use_catalog = true;
@@ -1008,10 +1065,12 @@ template<typename ComBackend>
 struct Printer {
 private:
     static constexpr std::size_t StagingBytes = REMOTE_FMT_STAGING_BYTES;
+    static constexpr bool        FrameCheck   = REMOTE_FMT_FRAME_CHECK != 0;
 
     template<std::size_t Extent = std::dynamic_extent>
     void constexpr write(std::span<std::byte const,
                                    Extent> span) {
+        if constexpr(FrameCheck) { crc = protocol::crcOver(crc, span); }
         if constexpr(requires { ComBackend::write(span); }) {
             ComBackend::write(span);
         } else {
@@ -1157,6 +1216,11 @@ private:
     // zeroing them would cost a memclr per message.
     std::array<std::byte, StagingBytes> staging;
     std::size_t                         staged{};
+
+    // the running CRC of the frame's bytes written so far (REMOTE_FMT_FRAME_CHECK)
+    struct NoCrc {};
+
+    [[no_unique_address]] std::conditional_t<FrameCheck, std::uint8_t, NoCrc> crc{};
 
 public:
     constexpr Printer() = default;
@@ -1325,10 +1389,21 @@ private:
         } else if constexpr(requires { comBackend.initTransfer(); }) {
             comBackend.initTransfer();
         }
-        printHelper(protocol::Start_marker);
+        if constexpr(FrameCheck) {
+            crc = protocol::CrcInit;
+            printHelper(protocol::Checked_start_marker);
+        } else {
+            printHelper(protocol::Start_marker);
+        }
     }
 
     constexpr void endRecord() {
+        if constexpr(FrameCheck) {
+            // the bytes still staged count too; the CRC byte itself is not in the CRC
+            std::uint8_t const value = protocol::crcFinal(
+              protocol::crcOver(crc, std::span<std::byte const>{staging}.first(staged)));
+            append(value);
+        }
         printHelper(protocol::End_marker);
         flush();
 
