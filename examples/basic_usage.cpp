@@ -4,7 +4,6 @@
 #include "remote_fmt/catalog.hpp"
 #include "remote_fmt/parser.hpp"
 #include "remote_fmt/remote_fmt.hpp"
-#include "remote_fmt/type_identifier.hpp"
 
 #include <cassert>
 #include <cstddef>
@@ -38,14 +37,14 @@ int main() {
     //The print-function is called and the CommunicationBackend handles
     //communication with the remote device.
     printer.print("Test {}"_sc, 123);
-    assert(!printer.get_com_backend().memory.empty());
+    assert(!printer.getComBackend().memory.empty());
 
     //The data is sent to the input buffer of the remote device.
-    auto const& buffer = printer.get_com_backend().memory;
+    auto const& buffer = printer.getComBackend().memory;
 
     //The remote device parses the data from the buffer without a catalog
-    auto const& [message, remainingBytes, discardedBytes]
-      = remote_fmt::parse(std::span{buffer}, {}, [](auto const&) {});
+    auto const& [message, remainingBytes, discardedBytes, catalogId]
+      = remote_fmt::parseMessage(std::span{buffer}, {}, [](auto const&) {});
 
     assert(remainingBytes.size() == 0);
     assert(discardedBytes == 0);

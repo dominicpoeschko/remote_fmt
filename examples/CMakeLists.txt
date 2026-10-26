@@ -8,7 +8,7 @@ add_subdirectory(../ ${CMAKE_CURRENT_BINARY_DIR}/remote_fmt)
 
 function(remote_fmt_add_example name source)
     add_executable(${name} ${source})
-    target_compile_features(${name} PRIVATE cxx_std_23)
+    target_compile_features(${name} PRIVATE cxx_std_26)
     # fmt arrives through remote_fmt::parser, which the examples use directly as well.
     target_link_libraries(${name} PRIVATE remote_fmt::remote_fmt remote_fmt::parser)
 endfunction()

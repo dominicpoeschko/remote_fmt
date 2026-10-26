@@ -1,39 +1,33 @@
 #pragma once
 
+// The host half of remote_fmt: frames back to text. A frame carries an id and values; the string
+// behind the id (the catalog's, or an inline one) is the format string, 0x1e and the descriptors of the values
+// (descriptor.hpp). The parser walks descriptor and bytes together - once to find the frame's exact end and check it,
+// then once to render it with fmt - and renders each kind as fmt would (or as the protocol defines it: optional,
+// expected, variant, enums, registers, quantities).
+
+#include "remote_fmt/catalog.hpp"
+#include "remote_fmt/descriptor.hpp"
+#include "remote_fmt/descriptor_grammar.hpp"
+#include "remote_fmt/detail/Lifetimebound.hpp"
+#include "remote_fmt/detail/enchantum.hpp"
 #include "remote_fmt/fmt_wrapper.hpp"
-#include "remote_fmt/remote_fmt.hpp"
-#include "remote_fmt/type_identifier.hpp"
+#include "remote_fmt/format_grammar.hpp"
+#include "remote_fmt/wire.hpp"
 
 #include <algorithm>
-#include <cassert>
+#include <bit>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
-#ifdef __GNUC__
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wextra-semi"
-    #pragma GCC diagnostic ignored "-Wsign-conversion"
-#endif
-#ifdef __clang__
-    #pragma clang diagnostic push
-    #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
-    #pragma clang diagnostic ignored "-Wnewline-eof"
-    #pragma clang diagnostic ignored "-Wsign-conversion"
-#endif
-#include <enchantum/algorithms.hpp>
-#include <enchantum/enchantum.hpp>
-#ifdef __GNUC__
-    #pragma GCC diagnostic pop
-#endif
-#ifdef __clang__
-    #pragma clang diagnostic pop
-#endif
 #include <functional>
-#include <iterator>
-#include <map>
+#include <limits>
 #include <optional>
 #include <ratio>
+#include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -41,16 +35,8 @@
 #include <vector>
 
 namespace remote_fmt {
+
 namespace detail {
-
-    template<typename Iterator>
-    struct ParseResult_ {
-        std::string str;
-        Iterator    pos;
-    };
-
-    template<typename Iterator>
-    using ParseResult = std::optional<ParseResult_<Iterator>>;
 
     struct FillAlignWidth {
         std::string padField;     ///< "{:*>10}" -- what pads the finished text, "{}" for nothing
@@ -64,7 +50,7 @@ namespace detail {
     /// The zero flag is the exception and is left where it is: "{:08.2f}" asks for sign-aware zero
     /// padding, which is a property of the number ("00001.50 V"), and zero-padding a string that
     /// ends in a unit symbol would be nonsense. Dynamic widths ("{:{}}") never get here - they are
-    /// rejected on the target at compile time and again by replacementFieldWithinLimits.
+    /// rejected on the target at compile time and again by the parser's scan (ScanError::nested).
     inline FillAlignWidth splitFillAlignWidth(std::string_view replacementField) {
         FillAlignWidth result{"{}", std::string{replacementField}};
 
@@ -116,283 +102,63 @@ namespace detail {
         return result;
     }
 
-    template<ExtendedTypeIdentifier>
-    struct ExtendedTypeIdentifierParser;
+    // The bytes of one frame, read from the front.
+    struct Input {
+        std::span<std::byte const> bytes;
+        std::size_t                pos{};
 
-    template<>
-    struct ExtendedTypeIdentifierParser<ExtendedTypeIdentifier::styled> {
-        // NOTE: This function is part of a recursive parsing system for nested data structures.
-        // Recursion is bounded by the structure of the serialized data being parsed.
-        template<typename Iterator,
-                 typename Parser>
-        static ParseResult<Iterator>
-        parse(Iterator                               first,
-              Iterator                               last,
-              std::string_view                       replacementField,
-              bool                                   in_map,
-              bool                                   in_list,
-              std::unordered_map<std::uint16_t,
-                                 std::string> const& stringConstantsMap,
-              Parser&                                parser) {
-            if(1 > static_cast<std::size_t>(std::distance(first, last))) { return std::nullopt; }
-            std::uint8_t const set = static_cast<std::uint8_t>(*first);
-            ++first;
+        [[nodiscard]] std::size_t left() const { return bytes.size() - pos; }
 
-            if((set & static_cast<std::uint8_t>(0xC0)) != 0) { return std::nullopt; }
-            bool const fg_rgb  = 0 != (set & static_cast<std::uint8_t>(1));
-            bool const fg_term = 0 != (set & static_cast<std::uint8_t>(2));
-            bool const bg_rgb  = 0 != (set & static_cast<std::uint8_t>(4));
-            bool const bg_term = 0 != (set & static_cast<std::uint8_t>(8));
-            bool const emp     = 0 != (set & static_cast<std::uint8_t>(16));
-
-            if((fg_rgb && fg_term) || (bg_rgb && bg_term) || (fg_term && (bg_term || bg_rgb))
-               || (bg_term && (fg_term || fg_rgb)))
-            {
-                return std::nullopt;
-            }
-            fmt::text_style style{};
-
-            auto extractColor = [&](bool rgb, bool term, auto gen) {
-                if(rgb) {
-                    auto const opt_result = parser.extractSize(first, last, TypeSize::_4);
-                    if(!opt_result) { return false; }
-                    auto const color = opt_result->first;
-                    if(color >= (1U << 25U)) { return false; }
-                    first = opt_result->second;
-                    style |= gen(static_cast<fmt::color>(color));
-                }
-                if(term) {
-                    auto const opt_result_term = parser.extractSize(first, last, TypeSize::_1);
-                    if(!opt_result_term) { return false; }
-
-                    auto const color = opt_result_term->first;
-
-                    if(!enchantum::contains<fmt::terminal_color>(
-                         static_cast<std::underlying_type_t<fmt::terminal_color>>(color)))
-                    {
-                        return false;
-                    }
-
-                    first = opt_result_term->second;
-                    style |= gen(static_cast<fmt::terminal_color>(color));
-                }
-                return true;
-            };
-            if(!extractColor(fg_rgb, fg_term, [](auto value) { return fmt::fg(value); })) {
-                return std::nullopt;
-            }
-            if(!extractColor(bg_rgb, bg_term, [](auto value) { return fmt::bg(value); })) {
-                return std::nullopt;
-            }
-            if(emp) {
-                if(1 > static_cast<std::size_t>(std::distance(first, last))) {
-                    return std::nullopt;
-                }
-                std::uint8_t const emp_value = static_cast<std::uint8_t>(*first);
-                ++first;
-                style |= fmt::text_style{static_cast<fmt::emphasis>(emp_value)};
-            }
-
-            auto const inner_result = parser.parseFromTypeId(first,
-                                                             last,
-                                                             replacementField,
-                                                             in_list,
-                                                             in_map,
-                                                             stringConstantsMap);
-
-            if(!inner_result) { return std::nullopt; }
-
-            try {
-                auto const styled_string = fmt::format("{}", fmt::styled(inner_result->str, style));
-                first                    = inner_result->pos;
-                return ParseResult_<Iterator>{styled_string, first};
-
-            } catch(...) { return std::nullopt; }
+        std::optional<std::uint8_t> byte() {
+            if(left() < 1) { return std::nullopt; }
+            return std::to_integer<std::uint8_t>(bytes[pos++]);
         }
-    };
 
-    template<>
-    struct ExtendedTypeIdentifierParser<ExtendedTypeIdentifier::optional> {
-        // NOTE: This function is part of a recursive parsing system for optional value types.
-        // Recursion is bounded by the structure of the serialized data being parsed.
-        template<typename Iterator,
-                 typename Parser>
-        static ParseResult<Iterator>
-        parse(Iterator         first,
-              Iterator         last,
-              std::string_view replacementField,
-              bool             in_map,
-              bool /*in_list*/,
-              std::unordered_map<std::uint16_t,
-                                 std::string> const& stringConstantsMap,
-              Parser&                                parser) {
-            if(1 > static_cast<std::size_t>(std::distance(first, last))) { return std::nullopt; }
-            std::uint8_t const isSet = static_cast<std::uint8_t>(*first);
-            ++first;
-
-            if(isSet != 0 && isSet != 1) { return std::nullopt; }
-
-            if(isSet == 0) { return ParseResult_<Iterator>{"none", first}; }
-            // in_list is forced true rather than forwarded: a wrapper payload is a nested position,
-            // so fmt keeps applying its debug format inside optional(...) - optional("s") and
-            // optional('c'), not optional(s) and optional(c).
-            auto const inner_result = parser.parseFromTypeId(first,
-                                                             last,
-                                                             replacementField,
-                                                             true,
-                                                             in_map,
-                                                             stringConstantsMap);
-
-            if(!inner_result) { return std::nullopt; }
-            return ParseResult_<Iterator>{fmt::format("optional({})", inner_result->str),
-                                          inner_result->pos};
-        }
-    };
-
-    template<>
-    struct ExtendedTypeIdentifierParser<ExtendedTypeIdentifier::quantity> {
-        /// The unit symbol, then the value. The value is parsed with the caller's own
-        /// replacement field, so a quantity takes the spec its representation would have
-        /// taken: "{:.2f}" on a float quantity, "{:#x}" on an integral one. The symbol is
-        /// read with an empty field and outside any list, so it arrives as the bare
-        /// characters rather than in fmt's debug quotes.
-        ///
-        /// Fill, align and width are held back and applied to number and symbol together, so
-        /// "{:>10}" positions "1.5 V" the way it would position any other argument rather than
-        /// padding the number and leaving the unit hanging past the column.
-        template<typename Iterator,
-                 typename Parser>
-        static ParseResult<Iterator>
-        parse(Iterator                               first,
-              Iterator                               last,
-              std::string_view                       replacementField,
-              bool                                   in_map,
-              bool                                   in_list,
-              std::unordered_map<std::uint16_t,
-                                 std::string> const& stringConstantsMap,
-              Parser&                                parser) {
-            auto const symbol
-              = parser.parseFromTypeId(first, last, "{}", false, false, stringConstantsMap);
-            if(!symbol) { return std::nullopt; }
-
-            auto const [padField, valueField] = splitFillAlignWidth(replacementField);
-
-            auto const value = parser.parseFromTypeId(symbol->pos,
-                                                      last,
-                                                      valueField,
-                                                      in_list,
-                                                      in_map,
-                                                      stringConstantsMap);
-            if(!value) { return std::nullopt; }
-
-            auto const text = fmt::format("{}{}", value->str, symbol->str);
-            if(padField == "{}") { return ParseResult_<Iterator>{text, value->pos}; }
-
-            try {
-                return ParseResult_<Iterator>{fmt::format(fmt::runtime(padField), text),
-                                              value->pos};
-            } catch(std::exception const& e) {
-                parser.errorMessagef(
-                  fmt::format("bad format for replacement field {:?}: {} (quantity: \"{}\")",
-                              replacementField,
-                              e.what(),
-                              text));
-                return std::nullopt;
+        // n bytes, little endian
+        std::optional<std::uint64_t> raw(std::size_t n) {
+            if(left() < n) { return std::nullopt; }
+            std::uint64_t v = 0;
+            for(std::size_t i = 0; i != n; ++i) {
+                v |= static_cast<std::uint64_t>(std::to_integer<std::uint8_t>(bytes[pos + i]))
+                  << (8U * i);
             }
+            pos += n;
+            return v;
         }
-    };
 
-    template<>
-    struct ExtendedTypeIdentifierParser<ExtendedTypeIdentifier::variant> {
-        template<typename Iterator,
-                 typename Parser>
-        static ParseResult<Iterator>
-        parse(Iterator         first,
-              Iterator         last,
-              std::string_view replacementField,
-              bool             in_map,
-              bool /*in_list*/,
-              std::unordered_map<std::uint16_t,
-                                 std::string> const& stringConstantsMap,
-              Parser&                                parser) {
-            auto const inner_result = parser.parseFromTypeId(first,
-                                                             last,
-                                                             replacementField,
-                                                             true,
-                                                             in_map,
-                                                             stringConstantsMap);
-            if(!inner_result) { return std::nullopt; }
-            return ParseResult_<Iterator>{fmt::format("variant({})", inner_result->str),
-                                          inner_result->pos};
-        }
-    };
-
-    template<>
-    struct ExtendedTypeIdentifierParser<ExtendedTypeIdentifier::expected> {
-        template<typename Iterator,
-                 typename Parser>
-        static ParseResult<Iterator>
-        parse(Iterator         first,
-              Iterator         last,
-              std::string_view replacementField,
-              bool             in_map,
-              bool /*in_list*/,
-              std::unordered_map<std::uint16_t,
-                                 std::string> const& stringConstantsMap,
-              Parser&                                parser) {
-            if(1 > static_cast<std::size_t>(std::distance(first, last))) { return std::nullopt; }
-            std::uint8_t const hasValue = static_cast<std::uint8_t>(*first);
-            ++first;
-
-            if(hasValue != 0 && hasValue != 1) { return std::nullopt; }
-
-            // in_list forced true for the same reason as optional: fmt writes expected("ok") and
-            // unexpected("err"), keeping the debug format inside the wrapper.
-            auto const inner_result = parser.parseFromTypeId(first,
-                                                             last,
-                                                             replacementField,
-                                                             true,
-                                                             in_map,
-                                                             stringConstantsMap);
-            if(!inner_result) { return std::nullopt; }
-
-            if(hasValue == 1) {
-                // A void value parses to the empty string, so this yields fmt's "expected()".
-                return ParseResult_<Iterator>{fmt::format("expected({})", inner_result->str),
-                                              inner_result->pos};
+        // LEB128, at most 10 bytes; one that does not fit 64 bits (or runs past the data) is nullopt
+        std::optional<std::uint64_t> varint() {
+            std::uint64_t v = 0;
+            for(unsigned shift = 0; shift < 70; shift += 7) {
+                auto const b = byte();
+                if(!b) { return std::nullopt; }
+                auto const part = static_cast<std::uint64_t>(*b & 0x7FU);
+                if(shift == 63 && part > 1) { return std::nullopt; }
+                v |= part << shift;
+                if((*b & 0x80U) == 0) { return v; }
             }
-            return ParseResult_<Iterator>{fmt::format("unexpected({})", inner_result->str),
-                                          inner_result->pos};
-        }
-    };
-
-    template<>
-    struct ExtendedTypeIdentifierParser<ExtendedTypeIdentifier::void_type> {
-        template<typename Iterator,
-                 typename Parser>
-        static ParseResult<Iterator>
-        parse(Iterator first,
-              Iterator /*last*/,
-              std::string_view /*replacementField*/,
-              bool /*in_map*/,
-              bool /*in_list*/,
-              std::unordered_map<std::uint16_t,
-                                 std::string> const& /*stringConstantsMap*/,
-              Parser& /*parser*/) {
-            // Empty rather than "void": this identifier only ever appears as the value of an
-            // expected, and fmt prints that as "expected()".
-            return ParseResult_<Iterator>{"", first};
+            return std::nullopt;
         }
     };
 
     struct Parser {
-        std::function<void(std::string_view)> errorMessagef;
+        using Strings = std::unordered_map<std::uint16_t, std::string>;
 
-        // Nesting is whatever the device sent: a list of a list of a list ... costs two bytes per
-        // level on the wire but a whole parseFromTypeId/parseType/parseRange/parseList frame on the
-        // stack, so a few kilobytes run the stack out. Nothing legitimate nests past a handful of
-        // levels, so the limit only ever rejects a frame that was already malformed.
-        static constexpr std::size_t Max_nesting_depth = 64;
+        std::function<void(std::string_view)> errorMessagef;
+        Strings const*                        strings{};
+
+        // Why the last walk stopped: out of bytes (the frame may still be arriving), or bytes or a descriptor that
+        // make no frame, or a frame whose text fmt refused (reported through errorMessagef).
+        enum class Stop { none, shortData, malformed, render };
+        Stop stop{Stop::none};
+        // false: only walk (validate the structure, find the end); true: render too
+        bool render{};
+
+        // Nesting is whatever the descriptor says, and an inline descriptor came off the wire: a list of a list of a
+        // list ... costs a frame of value() on the stack per level. Nothing legitimate nests past a handful of levels.
+        static constexpr std::size_t maxNestingDepth = 64;
+        // the elements of a range whose element can take no bytes (string constants): bounded by this, not the data
+        static constexpr std::uint64_t maxEmptyElements = 4096;
 
         std::size_t nestingDepth{};
 
@@ -411,260 +177,145 @@ namespace detail {
         template<typename ErrorMessageF>
             requires(!std::is_same_v<std::decay_t<ErrorMessageF>,
                                      Parser>)
-        explicit Parser(ErrorMessageF&& errorMessagef_)
-          : errorMessagef{std::forward<ErrorMessageF>(errorMessagef_)} {}
+        explicit Parser(ErrorMessageF&&         errorMessagef_,
+                        Strings const* strings_ REMOTE_FMT_LIFETIMEBOUND = nullptr)
+          : errorMessagef{std::forward<ErrorMessageF>(errorMessagef_)}
+          , strings{strings_} {}
 
-        // Running out of replacement fields and being malformed are different answers: the first
-        // ends the caller's loop normally, the second has to fail the frame.
-        struct NextReplacementField {
-            std::optional<std::string_view> field{};
-            bool                            malformed{false};
-        };
+        using Text = std::optional<std::string>;
 
-        // The three rejections below used to be asserts. The format string comes from the wire or
-        // from the catalog file, so it is device-controlled either way and none of this is an
-        // invariant to assert on - under NDEBUG the assert vanishes and the input that aborts a test
-        // build sails through a release one. checkReplacementFieldCount is deliberately not trusted
-        // to have ruled these out: it is a second implementation of the same grammar, and the two
-        // disagreeing is what produced the abort.
-        NextReplacementField
-        getNextReplacementFieldFromFmtStringAndAppendStrings(std::string&      out,
-                                                             std::string_view& fmtString) {
-            while(!fmtString.empty()) {
-                auto const curlyPos = std::ranges::find_if(fmtString, [](auto character) {
-                    return character == '{' || character == '}';
-                });
-
-                if(curlyPos == fmtString.end()) {
-                    out += fmtString;
-                    fmtString = std::string_view{};
-                    return {};
-                }
-
-                // A trailing lone brace: neither an escape pair nor a field that can close.
-                if(std::next(curlyPos) == fmtString.end()) { return {.malformed = true}; }
-
-                if(*(std::next(curlyPos)) == *curlyPos) {
-                    out += std::string_view{fmtString.begin(), std::next(curlyPos)};
-                    fmtString = std::string_view{std::next(curlyPos, 2), fmtString.end()};
-                    continue;
-                }
-
-                // An unescaped '}' with no field open closes nothing.
-                if(*curlyPos != '{') { return {.malformed = true}; }
-
-                auto const closeCurlyPos = std::ranges::find(fmtString, '}');
-                if(closeCurlyPos == fmtString.end()) { return {.malformed = true}; }
-
-                out += std::string_view{fmtString.begin(), curlyPos};
-                fmtString = std::string_view{std::next(closeCurlyPos), fmtString.end()};
-                return {
-                  .field = std::string_view{curlyPos, std::next(closeCurlyPos)}
-                };
-            }
-            return {};
+        Text shortData() {
+            if(stop == Stop::none) { stop = Stop::shortData; }
+            return std::nullopt;
         }
 
-        using trivial_t
-          = std::variant<std::uint64_t, std::int64_t, bool, char, void const*, float, double>;
+        Text malformed() {
+            if(stop == Stop::none) { stop = Stop::malformed; }
+            return std::nullopt;
+        }
 
+        Text renderError(std::string const& message) {
+            errorMessagef(message);
+            if(stop == Stop::none) { stop = Stop::render; }
+            return std::nullopt;
+        }
+
+        // fmt::format with a field off the wire or the catalog; `what` describes the value for the message
         template<typename T,
-                 typename Iterator>
-        T extract(Iterator first,
-                  Iterator last) {
-            static_assert(std::is_trivially_copyable_v<T>, "T must be trivially copyable");
-            if(static_cast<std::size_t>(std::distance(first, last)) < sizeof(T)) {
-                throw std::runtime_error("Insufficient data for extraction");
+                 typename What>
+        Text formatted(std::string_view field,
+                       T const&         value,
+                       What&&           what) {
+            if(!render) { return std::string{}; }
+            try {
+                return fmt::format(fmt::runtime(field), value);
+            } catch(std::exception const& e) {
+                return renderError(fmt::format("bad format for replacement field {:?}: {} ({})",
+                                               field,
+                                               e.what(),
+                                               what()));
             }
-            T value;
-            std::memcpy(&value, &*first, sizeof(T));
-            return value;
         }
 
-        template<typename Iterator>
-        std::optional<std::variant<double,
-                                   float>>
-        extractFloatingpoint(Iterator first,
-                             Iterator last,
-                             TypeSize typeSize) {
-            if(typeSize == TypeSize::_4) { return extract<float>(first, last); }
-            if(typeSize == TypeSize::_8) { return extract<double>(first, last); }
-            return std::nullopt;
+        // a string as fmt would print it here: its debug form inside a range or tuple when the field is plain
+        Text stringValue(std::string_view field,
+                         std::string_view value,
+                         bool             inList,
+                         std::string_view kind) {
+            if(!render) { return std::string{}; }
+            if(inList && field == defaultReplacementField) { return fmt::format("{:?}", value); }
+            return formatted(field, value, [&] {
+                return fmt::format("{}: \"{}\", length: {}, in_list: {}",
+                                   kind,
+                                   value,
+                                   value.size(),
+                                   inList);
+            });
         }
 
-        template<typename Iterator>
-        std::optional<std::uint64_t> extractUnsigned(Iterator first,
-                                                     Iterator last,
-                                                     TypeSize typeSize) {
-            switch(typeSize) {
-            case TypeSize::_1: return extract<std::uint8_t>(first, last);
-            case TypeSize::_2: return extract<std::uint16_t>(first, last);
-            case TypeSize::_4: return extract<std::uint32_t>(first, last);
-            case TypeSize::_8: return extract<std::uint64_t>(first, last);
-            }
-            return std::nullopt;
+        // ---- scalars
+
+        Text integer(std::string_view field,
+                     bool             isSigned,
+                     std::size_t      size,
+                     Input&           in) {
+            std::int64_t asSigned{};
+            auto const   bits = integerBits(isSigned, size, in, asSigned);
+            if(!bits) { return std::nullopt; }
+            if(isSigned) { return signedValue(field, asSigned, size); }
+            return unsignedValue(field, *bits, size);
         }
 
-        template<typename Iterator>
-        std::optional<std::pair<std::size_t,
-                                Iterator>>
-        extractSize(Iterator first,
-                    Iterator last,
-                    TypeSize typeSize) {
-            auto const byteCount = byteSize(typeSize);
-
-            if(byteCount > static_cast<std::size_t>(std::distance(first, last))) {
-                return std::nullopt;
-            }
-
-            auto optionalSize = extractUnsigned(first, last, typeSize);
-            if(!optionalSize) { return std::nullopt; }
-
-            return {
-              {static_cast<std::size_t>(*optionalSize),
-               std::next(first, static_cast<std::make_signed_t<std::size_t>>(byteCount))}
-            };
+        // the three readers of an unsigned number (u, an `A` element, an enum without a name for it): one text
+        Text unsignedValue(std::string_view field,
+                           std::uint64_t    bits,
+                           std::size_t      size) {
+            return formatted(field, bits, [&] {
+                return fmt::format("type: unsigned, size: {} bytes", size);
+            });
         }
 
-        template<typename Iterator>
-        std::optional<std::int64_t> extractSigned(Iterator first,
-                                                  Iterator last,
-                                                  TypeSize typeSize) {
-            switch(typeSize) {
-            case TypeSize::_1: return extract<std::int8_t>(first, last);
-            case TypeSize::_2: return extract<std::int16_t>(first, last);
-            case TypeSize::_4: return extract<std::int32_t>(first, last);
-            case TypeSize::_8: return extract<std::int64_t>(first, last);
-            }
-            return std::nullopt;
+        // b and an `A` element of b
+        Text boolValue(std::string_view field,
+                       std::uint64_t    bits) {
+            if(bits > 1) { return malformed(); }
+            return formatted(field, bits != 0, [] {
+                return std::string{"type: bool, size: 1 bytes"};
+            });
         }
 
-        template<typename Iterator>
-        std::optional<char> extractCharacter(Iterator first,
-                                             Iterator last,
-                                             TypeSize typeSize) {
-            if(typeSize == TypeSize::_1) { return extract<char>(first, last); }
-            return std::nullopt;
+        Text signedValue(std::string_view field,
+                         std::int64_t     value,
+                         std::size_t      size) {
+            return formatted(field, value, [&] {
+                return fmt::format("type: signed, size: {} bytes", size);
+            });
         }
 
-        template<typename Iterator>
-        std::optional<bool> extractBoolean(Iterator first,
-                                           Iterator last,
-                                           TypeSize typeSize) {
-            auto const optionalUnsigned = extractUnsigned(first, last, typeSize);
-            if(!optionalUnsigned) { return std::nullopt; }
-            if(*optionalUnsigned != 0) { return true; }
-            return false;
-        }
-
-        template<typename Iterator>
-        std::optional<void const*> extractPointer(Iterator first,
-                                                  Iterator last,
-                                                  TypeSize typeSize) {
-            auto const optionalUnsigned = extractUnsigned(first, last, typeSize);
-            if(!optionalUnsigned) { return std::nullopt; }
-            return std::bit_cast<void const*>(static_cast<std::uintptr_t>(*optionalUnsigned));
-        }
-
-        template<typename Iterator>
-        std::optional<std::pair<trivial_t,
-                                Iterator>>
-        extractTrivial(Iterator    first,
-                       Iterator    last,
-                       TrivialType trivialType,
-                       TypeSize    typeSize) {
-            auto const byteCount = byteSize(typeSize);
-            if(byteCount > static_cast<std::size_t>(std::distance(first, last))) {
-                return std::nullopt;
-            }
-            std::optional<trivial_t> optionalTrivial;
-            switch(trivialType) {
-            case TrivialType::unsigned_:
-                optionalTrivial = extractUnsigned(first, last, typeSize);
-                break;
-            case TrivialType::signed_:
-                optionalTrivial = extractSigned(first, last, typeSize);
-                break;
-            case TrivialType::boolean:
-                optionalTrivial = extractBoolean(first, last, typeSize);
-                break;
-            case TrivialType::character:
-                optionalTrivial = extractCharacter(first, last, typeSize);
-                break;
-            case TrivialType::pointer:
-                optionalTrivial = extractPointer(first, last, typeSize);
-                break;
-            case TrivialType::floatingpoint:
-                {
-                    auto optionalFloat = extractFloatingpoint(first, last, typeSize);
-                    if(!optionalFloat) { return std::nullopt; }
-                    std::visit([&](auto value) { optionalTrivial = value; }, *optionalFloat);
+        // An integer of `size` bytes: 4 bytes as LEB128 (zigzag for a signed one), every other width raw, little
+        // endian (formatters.hpp formatter<integral>). The bits, and in asSigned the value a signed one stands for.
+        std::optional<std::uint64_t> integerBits(bool          isSigned,
+                                                 std::size_t   size,
+                                                 Input&        in,
+                                                 std::int64_t& asSigned) {
+            if(size == 4) {
+                auto const v = in.varint();
+                if(!v) {
+                    if(in.left() == 0) {
+                        shortData();
+                    } else {
+                        malformed();
+                    }
+                    return std::nullopt;
                 }
-                break;
+                if((*v >> 32U) != 0) {
+                    malformed();
+                    return std::nullopt;
+                }
+                if(isSigned) {
+                    asSigned
+                      = static_cast<std::int64_t>(*v >> 1U) ^ -static_cast<std::int64_t>(*v & 1U);
+                    return static_cast<std::uint64_t>(asSigned);
+                }
+                asSigned = static_cast<std::int64_t>(*v);
+                return v;
             }
-            if(!optionalTrivial) { return std::nullopt; }
-            first += static_cast<std::make_signed_t<std::size_t>>(byteCount);
-            return {
-              {*optionalTrivial, first}
-            };
+            auto const v = in.raw(size);
+            if(!v) {
+                shortData();
+                return std::nullopt;
+            }
+            if(isSigned) {
+                // sign-extended from the top bit of its width
+                auto const unused = static_cast<unsigned>(64U - (8U * size));
+                asSigned          = static_cast<std::int64_t>(*v << unused) >> unused;
+                return static_cast<std::uint64_t>(asSigned);
+            }
+            asSigned = static_cast<std::int64_t>(*v);
+            return v;
         }
 
-        template<typename Iterator>
-        ParseResult<Iterator> extractAndFormatTrivial(Iterator         first,
-                                                      Iterator         last,
-                                                      std::string_view replacementField,
-                                                      TrivialType      trivialType,
-                                                      TypeSize         typeSize,
-                                                      bool             in_list) {
-            auto const optionalTrivial = extractTrivial(first, last, trivialType, typeSize);
-            if(!optionalTrivial) { return std::nullopt; }
-            first                  = optionalTrivial->second;
-            auto const optionalStr = std::visit(
-              [&](auto const& value) -> std::optional<std::string> {
-                  try {
-                      // A char nested in a range or tuple gets fmt's debug format ('x', with
-                      // control bytes escaped), matching what fmt does for the same container.
-                      // Only chars: fmt leaves the other trivial types alone inside containers.
-                      if constexpr(std::is_same_v<std::remove_cvref_t<decltype(value)>, char>) {
-                          if(in_list && replacementField == Default_replacement_field) {
-                              return fmt::format("{:?}", value);
-                          }
-                      }
-                      return fmt::format(fmt::runtime(replacementField), value);
-                  } catch(std::exception const& e) {
-                      errorMessagef(fmt::format(
-                        "bad format for replacement field {:?}: {} (type: {}, size: {} bytes)",
-                        replacementField,
-                        e.what(),
-                        enchantum::to_string(trivialType),
-                        byteSize(typeSize)));
-                      return std::nullopt;
-                  }
-              },
-              optionalTrivial->first);
-            if(!optionalStr) { return std::nullopt; }
-            return {
-              {*optionalStr, first}
-            };
-        }
-
-        template<typename Iterator>
-        ParseResult<Iterator> parseTrivial(Iterator         first,
-                                           Iterator         last,
-                                           std::string_view replacementField,
-                                           bool             in_list) {
-            if(first == last) { return std::nullopt; }
-            auto const trivialTypeId = parseTrivialTypeIdentifier(*first);
-            if(!trivialTypeId) { return std::nullopt; }
-            ++first;
-            auto const [trivialType, typeSize] = *trivialTypeId;
-            return extractAndFormatTrivial(first,
-                                           last,
-                                           replacementField,
-                                           trivialType,
-                                           typeSize,
-                                           in_list);
-        }
+        // ---- time
 
         using std_ratios = std::tuple<std::atto,
                                       std::femto,
@@ -694,34 +345,6 @@ namespace detail {
                                       std::chrono::months::period,
                                       std::chrono::years::period>;
 
-        template<typename Rep,
-                 typename Ratio>
-        std::optional<std::string> formatTimeFixedRatioImpl(Rep              value,
-                                                            TimeType         timeType,
-                                                            std::string_view replacementField) {
-            using duration = std::chrono::duration<Rep, Ratio>;
-            try {
-                // A time_point is its duration since the clock's epoch, which is how the
-                // custom-ratio path below already renders it ("<count>[num/den]s") and what
-                // the LogEntry parser expects back. Only ever reached with a standard
-                // period, i.e. a LogClock ticking in a unit fmt knows a suffix for.
-                if(timeType == TimeType::duration || timeType == TimeType::time_point) {
-                    return fmt::format(fmt::runtime(replacementField), duration{value});
-                }
-            } catch(std::exception const& e) {
-                errorMessagef(
-                  fmt::format("bad format for replacement field {:?}: {} (timeType: {}, ratio: "
-                              "{}/{}, value: {})",
-                              replacementField,
-                              e.what(),
-                              enchantum::to_string(timeType),
-                              Ratio::num,
-                              Ratio::den,
-                              value));
-            }
-            return std::nullopt;
-        }
-
         // fmt's chrono decomposition (%j, %H, ...) static_casts the day count from
         // floating point to int before range checking it - UB for huge values (fmt
         // 12.2.0, chrono.h to_nonnegative_int, found by fuzzing). Reject values whose
@@ -748,31 +371,51 @@ namespace detail {
         }
 
         template<typename Rep>
-        std::optional<std::string> formatTimeImpl(std::uint64_t    num,
-                                                  std::uint64_t    den,
-                                                  Rep              value,
-                                                  TimeType         timeType,
-                                                  std::string_view replacementField) {
+        Text formatTime(std::uint64_t    num,
+                        std::uint64_t    den,
+                        Rep              value,
+                        std::string_view replacementField) {
+            if(!render) { return std::string{}; }
             if constexpr(std::is_floating_point_v<Rep>) {
-                if(!timeValueSafeForFmt(num, den, value, replacementField)) { return std::nullopt; }
-            }
-            std::optional<std::string> oStr;
-            bool                       failed = false;
-            auto format_std_ratio = [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
-                using ratio = typename std::tuple_element_t<I, std_ratios>::type;
-                if(ratio::num == num && ratio::den == den) {
-                    oStr = formatTimeFixedRatioImpl<Rep, ratio>(value, timeType, replacementField);
-                    if(!oStr) { failed = true; }
-                    return false;
+                if(!timeValueSafeForFmt(num, den, value, replacementField)) {
+                    // said there, with the ratio and the value: one message per lost line
+                    if(stop == Stop::none) { stop = Stop::render; }
+                    return std::nullopt;
                 }
-                return true;
+            }
+            Text       oStr;
+            bool       failed = false;
+            auto const fixed  = [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
+                using ratio = typename std::tuple_element_t<I, std_ratios>::type;
+                if(ratio::num != static_cast<std::intmax_t>(num)
+                   || ratio::den != static_cast<std::intmax_t>(den))
+                {
+                    return true;
+                }
+                // A time_point is its duration since the clock's epoch, as the custom-ratio path below renders it.
+                try {
+                    oStr = fmt::format(fmt::runtime(replacementField),
+                                       std::chrono::duration<Rep, ratio>{value});
+                } catch(std::exception const& e) {
+                    errorMessagef(fmt::format(
+                      "bad format for replacement field {:?}: {} (ratio: {}/{}, value: {})",
+                      replacementField,
+                      e.what(),
+                      num,
+                      den,
+                      value));
+                    failed = true;
+                }
+                return false;
             };
-
             [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                (format_std_ratio(std::integral_constant<std::size_t, Is>{}) && ...);
+                (fixed(std::integral_constant<std::size_t, Is>{}) && ...);
             }(std::make_index_sequence<std::tuple_size_v<std_ratios>>{});
 
-            if(failed) { return std::nullopt; }
+            if(failed) {
+                if(stop == Stop::none) { stop = Stop::render; }
+                return std::nullopt;
+            }
             if(oStr) { return oStr; }
 
             if(replacementField == "{}" || replacementField == "{:%Q%q}") {
@@ -787,215 +430,66 @@ namespace detail {
 
             // Integer reps are converted to a double duration here, so they need the
             // same guard as floating point values.
-            if(!timeValueSafeForFmt(num, den, value, replacementField)) { return std::nullopt; }
+            if(!timeValueSafeForFmt(num, den, value, replacementField)) {
+                if(stop == Stop::none) { stop = Stop::render; }
+                return std::nullopt;
+            }
 
-            //TODO not correct but otherwise the replacementField needs to be parsed further...
+            // A ratio fmt has no type for, under any other spec: the value as a duration<double> of seconds, which a
+            // conversion (%H:%M, %S) or a precision then reads as seconds. A %Q or %q inside a longer spec thus gives
+            // the seconds and "s", not the count of the custom unit: doing better would mean parsing the spec here.
             try {
                 auto const dur = std::chrono::duration<double>{
                   (static_cast<double>(value) * static_cast<double>(num))
                   / static_cast<double>(den)};
                 return fmt::format(fmt::runtime(replacementField), dur);
             } catch(std::exception const& e) {
-                errorMessagef(fmt::format(
+                return renderError(fmt::format(
                   "bad format for replacement field {:?}: {} (custom ratio: {}/{}, value: {})",
                   replacementField,
                   e.what(),
                   num,
                   den,
                   value));
-                return std::nullopt;
             }
         }
 
-        template<typename Iterator>
-        ParseResult<Iterator> parseTime(Iterator         first,
-                                        Iterator         last,
-                                        std::string_view replacementField) {
-            if(first == last) { return std::nullopt; }
-            auto const trivialTypeId = parseTimeTypeIdentifier(*first);
-            if(!trivialTypeId) { return std::nullopt; }
-            ++first;
-            auto const [timeType, numSize, denominatorTypeSize, timeRep] = *trivialTypeId;
-
-            auto const byteCount
-              = byteSize(numSize) + byteSize(denominatorTypeSize) + byteSize(timeRep);
-            if(byteCount > static_cast<std::size_t>(std::distance(first, last))) {
-                return std::nullopt;
+        Text time(std::string_view& d,
+                  Input&            in,
+                  std::string_view  field) {
+            auto const num = grammar::number(d);
+            if(!num || !grammar::literal(d, '/')) { return malformed(); }
+            auto const den = grammar::number(d);
+            if(!den || *num == 0 || *den == 0 || d.empty()) { return malformed(); }
+            char const kind = d.front();
+            d.remove_prefix(1);
+            auto const size = grammar::size(d);
+            if(!size) { return malformed(); }
+            if(kind == 'f') {
+                auto const bits = in.raw(*size);
+                if(!bits) { return shortData(); }
+                double const value
+                  = *size == 4
+                    ? static_cast<double>(std::bit_cast<float>(static_cast<std::uint32_t>(*bits)))
+                  : *size == 8 ? std::bit_cast<double>(*bits)
+                               : 0.0;
+                if(*size != 4 && *size != 8) { return malformed(); }
+                return formatTime(*num, *den, value, field);
             }
-
-            auto const numeratorOpt
-              = extractUnsigned(first, last, numeratorSizeToTypeSize(numSize));
-            if(!numeratorOpt) { return std::nullopt; }
-            std::uint64_t const numerator = *numeratorOpt;
-            first += static_cast<std::make_signed_t<std::size_t>>(byteSize(numSize));
-            auto const denominatorOpt = extractUnsigned(first, last, denominatorTypeSize);
-            if(!denominatorOpt) { return std::nullopt; }
-            std::uint64_t const denominator = *denominatorOpt;
-            first += static_cast<std::make_signed_t<std::size_t>>(byteSize(denominatorTypeSize));
-
-            if(denominator == 0 || numerator == 0) { return std::nullopt; }
-
-            if(timeRep == TimeRepresentation::_float || timeRep == TimeRepresentation::_double) {
-                double const fpValue = (timeRep == TimeRepresentation::_float)
-                                       ? static_cast<double>(extract<float>(first, last))
-                                       : extract<double>(first, last);
-                first += static_cast<std::make_signed_t<std::size_t>>(byteSize(timeRep));
-                auto const optStr
-                  = formatTimeImpl(numerator, denominator, fpValue, timeType, replacementField);
-                if(!optStr) { return std::nullopt; }
-                return {
-                  {*optStr, first}
-                };
-            }
-
-            auto const valueOpt = extractSigned(first, last, repToTypeSize(timeRep));
-            if(!valueOpt) { return std::nullopt; }
-            std::int64_t const value = *valueOpt;
-            first += static_cast<std::make_signed_t<std::size_t>>(byteSize(timeRep));
-
-            auto const optionalTrivial
-              = formatTimeImpl(numerator, denominator, value, timeType, replacementField);
-            if(!optionalTrivial) { return std::nullopt; }
-
-            return {
-              {*optionalTrivial, first}
-            };
+            if(kind != 'i' && kind != 'u') { return malformed(); }
+            std::int64_t asSigned{};
+            if(!integerBits(kind == 'i', *size, in, asSigned)) { return std::nullopt; }
+            return formatTime(*num, *den, asSigned, field);
         }
 
-        template<typename Iterator>
-        ParseResult<Iterator>
-        parseCatalogedString(Iterator first,
-                             Iterator,
-                             std::size_t                            size,
-                             RangeLayout                            rangeLayout,
-                             std::string_view                       replacementField,
-                             bool                                   in_list,
-                             std::unordered_map<std::uint16_t,
-                                                std::string> const& stringConstantsMap) {
-            if(rangeLayout != RangeLayout::compact) { return std::nullopt; }
-
-            auto const stringIt = stringConstantsMap.find(static_cast<std::uint16_t>(size));
-            if(stringIt == stringConstantsMap.end()) {
-                errorMessagef(fmt::format("cataloged string not found {}", size));
-                return std::nullopt;
-            }
-
-            std::string const catalogedString = stringIt->second;
-
-            try {
-                auto const ret = [&]() {
-                    if(in_list && replacementField == Default_replacement_field) {
-                        return fmt::format("{:?}", catalogedString);
-                    }
-                    return fmt::format(fmt::runtime(replacementField), catalogedString);
-                }();
-                return {
-                  {ret, first}
-                };
-            } catch(std::exception const& e) {
-                errorMessagef(
-                  fmt::format("bad format for replacement field {:?}: {} (string: \"{}\", length: "
-                              "{}, in_list: {})\n",
-                              replacementField,
-                              e.what(),
-                              catalogedString,
-                              catalogedString.length(),
-                              in_list));
-                return std::nullopt;
-            }
-        }
-
-        template<typename Iterator>
-        ParseResult<Iterator> parseString(Iterator         first,
-                                          Iterator         last,
-                                          std::size_t      size,
-                                          RangeLayout      rangeLayout,
-                                          std::string_view replacementField,
-                                          bool             in_list) {
-            if(size > static_cast<std::size_t>(std::distance(first, last))) { return std::nullopt; }
-            if(rangeLayout != RangeLayout::compact) { return std::nullopt; }
-            std::string parsedString;
-            parsedString.resize(size);
-
-            auto const string_end
-              = std::next(first, static_cast<std::make_signed_t<std::size_t>>(size));
-            std::transform(first, string_end, parsedString.begin(), [](auto byte) {
-                return static_cast<char>(byte);
-            });
-
-            try {
-                auto const ret = [&]() {
-                    if(in_list && replacementField == Default_replacement_field) {
-                        return fmt::format("{:?}", parsedString);
-                    }
-                    return fmt::format(fmt::runtime(replacementField), parsedString);
-                }();
-                return {
-                  {ret, string_end}
-                };
-            } catch(std::exception const& e) {
-                errorMessagef(
-                  fmt::format("bad format for replacement field {:?}: {} (string: \"{}\", size: "
-                              "{}, in_list: {})",
-                              replacementField,
-                              e.what(),
-                              parsedString,
-                              size,
-                              in_list));
-                return std::nullopt;
-            }
-        }
-
-        // NOTE: This function handles parsing of extended type identifiers.
-        // Recursion is bounded by the depth of nested data structures in the serialized format.
-        template<typename Iterator>
-        ParseResult<Iterator>
-        parseExtendedTypeIdentifier(Iterator                               first,
-                                    Iterator                               last,
-                                    std::size_t                            size,
-                                    std::string_view                       replacementField,
-                                    bool                                   in_map,
-                                    bool                                   in_list,
-                                    std::unordered_map<std::uint16_t,
-                                                       std::string> const& stringConstantsMap) {
-            if(size > std::numeric_limits<std::underlying_type_t<ExtendedTypeIdentifier>>::max()
-               || !enchantum::contains<ExtendedTypeIdentifier>(
-                 static_cast<std::underlying_type_t<ExtendedTypeIdentifier>>(size)))
-            {
-                return std::nullopt;
-            }
-
-            auto const enumVal = *enchantum::index_to_enum<ExtendedTypeIdentifier>(size);
-            using ResultType
-              = decltype(ExtendedTypeIdentifierParser<
-                         enchantum::values<ExtendedTypeIdentifier>[0]>::parse(first,
-                                                                              last,
-                                                                              replacementField,
-                                                                              in_map,
-                                                                              in_list,
-                                                                              stringConstantsMap,
-                                                                              *this));
-            ResultType result = std::nullopt;
-            enchantum_ext::enum_switch(enumVal, [&](auto enumerator) {
-                static constexpr ExtendedTypeIdentifier eti = enumerator;
-                result = ExtendedTypeIdentifierParser<eti>::parse(first,
-                                                                  last,
-                                                                  replacementField,
-                                                                  in_map,
-                                                                  in_list,
-                                                                  stringConstantsMap,
-                                                                  *this);
-            });
-            return result;
-        }
+        // ---- containers
 
         struct RangeReplacementField {
             std::string rangeReplacementField;
             std::string childReplacementField;
         };
 
-        std::optional<RangeReplacementField>
-        fixRangeReplacementField(std::string_view replacementField) {
+        static RangeReplacementField fixRangeReplacementField(std::string_view replacementField) {
             RangeReplacementField rrf;
             if(!replacementField.starts_with("{:")) {
                 rrf.rangeReplacementField = "{}";
@@ -1009,7 +503,7 @@ namespace detail {
                 return rrf;
             }
             rrf.rangeReplacementField = replacementField.substr(0, colonPos);
-            rrf.rangeReplacementField += "}";
+            rrf.rangeReplacementField += '}';
 
             rrf.childReplacementField = "{";
             rrf.childReplacementField += replacementField.substr(colonPos);
@@ -1017,481 +511,775 @@ namespace detail {
             return rrf;
         }
 
-        // Tuple elements are parsed through parseFromTypeId, so their nesting is what
-        // Max_nesting_depth bounds.
-        template<typename Iterator>
-        ParseResult<Iterator>
-        parseTuple(Iterator                               first,
-                   Iterator                               last,
-                   std::size_t                            size,
-                   RangeLayout                            rangeLayout,
-                   std::string_view                       replacementField,
-                   bool                                   in_map,
-                   std::unordered_map<std::uint16_t,
-                                      std::string> const& stringConstantsMap) {
-            if(rangeLayout != RangeLayout::on_ti_each) { return std::nullopt; }
+        Text tuple(std::string_view& d,
+                   Input&            in,
+                   std::string_view  field,
+                   bool              inMap) {
+            // the element descriptors first: a pair is checked for its size
+            std::vector<std::string_view> elements;
+            while(!grammar::literal(d, ')')) {
+                auto const element = grammar::take(d);
+                if(!element) { return malformed(); }
+                elements.push_back(*element);
+            }
+            auto const [rangeField, childField] = fixRangeReplacementField(field);
+            bool const asMap                    = inMap || rangeField.contains('m');
+            if(render && asMap && elements.size() != 2) {
+                return renderError(
+                  fmt::format("bad format for replacement field {:?}: a map element of {} fields",
+                              field,
+                              elements.size()));
+            }
+            bool const parenthesis
+              = !inMap && !rangeField.contains('n') && !rangeField.contains('m');
 
-            auto const oRangeRepField = fixRangeReplacementField(replacementField);
-            if(!oRangeRepField) { return std::nullopt; }
-            auto const& [rangeReplacementField, childReplacementField] = *oRangeRepField;
+            std::string out = parenthesis ? "(" : "";
+            for(std::size_t i = 0; i != elements.size(); ++i) {
+                std::string_view element = elements[i];
+                auto const       text    = value(element, in, childField, true, false);
+                if(!text) { return std::nullopt; }
+                out += *text;
+                if(i + 1 != elements.size()) { out += asMap ? ": " : ", "; }
+            }
+            if(parenthesis) { out += ')'; }
+            return out;
+        }
 
-            if((in_map || rangeReplacementField.contains('m')) && size != 2) {
-                return std::nullopt;
+        Text range(char              kind,
+                   std::string_view& d,
+                   Input&            in,
+                   std::string_view  field) {
+            auto const taken = grammar::take(d);
+            if(!taken) { return malformed(); }
+            std::string_view const element = *taken;
+
+            auto const size = in.varint();
+            if(!size) { return in.left() == 0 ? shortData() : malformed(); }
+            if(grammar::canBeEmpty(element) ? *size > maxEmptyElements : *size > in.left()) {
+                return *size > in.left() && !grammar::canBeEmpty(element) ? shortData()
+                                                                          : malformed();
             }
 
-            bool const printParenthesis = !in_map && !rangeReplacementField.contains('n')
-                                       && !rangeReplacementField.contains('m');
+            auto const [rangeField, childField] = fixRangeReplacementField(field);
+            bool const parenthesis              = !rangeField.contains('n');
+            bool const list                     = kind == 'L' || kind == 'A';
 
-            std::string tupleString = printParenthesis ? "(" : "";
-            while(size != 0 && first != last) {
-                auto const optionalStr = parseFromTypeId(first,
-                                                         last,
-                                                         childReplacementField,
-                                                         true,
-                                                         false,
-                                                         stringConstantsMap);
-                if(!optionalStr) { return std::nullopt; }
-                tupleString += optionalStr->str;
-                first = optionalStr->pos;
-                --size;
-                if(size != 0) {
-                    if(in_map || rangeReplacementField.contains('m')) {
-                        tupleString += ": ";
-                    } else {
-                        tupleString += ", ";
-                    }
+            std::string out;
+            if(parenthesis) { out = list ? "[" : "{"; }
+            if(render) { out.reserve((static_cast<std::size_t>(*size) * 10) + 2); }
+
+            if(kind == 'A') {
+                // raw elements of a plain type: the element's size from its descriptor
+                std::string_view probe = element;
+                if(probe.empty()) { return malformed(); }
+                char const scalar = probe.front();
+                probe.remove_prefix(1);
+                std::size_t width = 1;
+                if(scalar == 'u' || scalar == 'i' || scalar == 'f') {
+                    auto const s = grammar::size(probe);
+                    if(!s) { return malformed(); }
+                    width = *s;
+                } else if(scalar != 'b' && scalar != 'c') {
+                    return malformed();
+                }
+                if(*size > in.left() / width) { return shortData(); }
+                for(std::uint64_t i = 0; i != *size; ++i) {
+                    auto const text = rawScalar(scalar, width, in, childField, true);
+                    if(!text) { return std::nullopt; }
+                    out += *text;
+                    if(i + 1 != *size) { out += ", "; }
+                }
+            } else {
+                bool const inMap = kind == 'M' || rangeField.contains('m');
+                for(std::uint64_t i = 0; i != *size; ++i) {
+                    std::string_view e    = element;
+                    auto const       text = value(e, in, childField, true, inMap);
+                    if(!text) { return std::nullopt; }
+                    out += *text;
+                    if(i + 1 != *size) { out += ", "; }
                 }
             }
-
-            if(size != 0) { return std::nullopt; }
-            if(printParenthesis) { tupleString += ')'; }
-            return {
-              {tupleString, first}
-            };
+            if(parenthesis) { out += list ? ']' : '}'; }
+            return out;
         }
 
-        // List elements are parsed through parseFromTypeId, so their nesting is what
-        // Max_nesting_depth bounds.
-        template<typename Iterator>
-        ParseResult<Iterator> parseList(Iterator                               first,
-                                        Iterator                               last,
-                                        std::size_t                            size,
-                                        RangeLayout                            rangeLayout,
-                                        std::string_view                       replacementField,
-                                        RangeType                              rangeType,
-                                        std::unordered_map<std::uint16_t,
-                                                           std::string> const& stringConstantsMap) {
-            auto const oRangeRepField = fixRangeReplacementField(replacementField);
-            if(!oRangeRepField) { return std::nullopt; }
-            auto const& [rangeReplacementField, childReplacementField] = *oRangeRepField;
-
-            bool const printParenthesis = !rangeReplacementField.contains('n');
-
-            std::string listString;
-            if(printParenthesis) {
-                listString = rangeType == RangeType::list ? "[" : "{";
-            } else {
-                listString = "";
+        // one element of an `A` range: a fixed-width scalar
+        Text rawScalar(char             scalar,
+                       std::size_t      width,
+                       Input&           in,
+                       std::string_view field,
+                       bool             inList) {
+            auto const bits = in.raw(width);
+            if(!bits) { return shortData(); }
+            switch(scalar) {
+            case 'b': return boolValue(field, *bits);
+            case 'c': return rawCharacter(static_cast<char>(*bits), field, inList);
+            case 'u': return unsignedValue(field, *bits, width);
+            case 'i':
+                {
+                    auto const shift = 64U - (8U * static_cast<unsigned>(width));
+                    auto const v     = static_cast<std::int64_t>(*bits << shift) >> shift;
+                    return signedValue(field, v, width);
+                }
+            case 'f':
+                if(width == 4) {
+                    return formatted(field,
+                                     std::bit_cast<float>(static_cast<std::uint32_t>(*bits)),
+                                     [] { return std::string{"type: float"}; });
+                }
+                if(width == 8) {
+                    return formatted(field, std::bit_cast<double>(*bits), [] {
+                        return std::string{"type: double"};
+                    });
+                }
+                return malformed();
+            default: return malformed();
             }
-            // Reserve space to reduce reallocations during string building
-            listString.reserve((size * 10) + (printParenthesis ? 2 : 0));   // Rough estimate
-
-            std::optional<std::tuple<TrivialType, TypeSize>> trivialTypeId;
-
-            if(rangeLayout == RangeLayout::compact && size != 0 && first != last) {
-                trivialTypeId = parseTrivialTypeIdentifier(*first);
-                if(!trivialTypeId) { return std::nullopt; }
-
-                ++first;
-            }
-
-            while(size != 0 && first != last) {
-                auto const optionalStr = [&]() {
-                    if(rangeLayout == RangeLayout::compact) {
-                        auto [trivialType, typeSize] = *trivialTypeId;
-                        // in_list is true here for the same reason the non-compact branch below
-                        // passes it: these are elements of a range. It is what makes a char
-                        // element print as 'x' rather than bare.
-                        return extractAndFormatTrivial(first,
-                                                       last,
-                                                       childReplacementField,
-                                                       trivialType,
-                                                       typeSize,
-                                                       true);
-                    }
-                    return parseFromTypeId(first,
-                                           last,
-                                           childReplacementField,
-                                           true,
-                                           rangeType == RangeType::map
-                                             || rangeReplacementField.contains('m'),
-                                           stringConstantsMap);
-                }();
-                if(!optionalStr) { return std::nullopt; }
-                listString += optionalStr->str;
-                first = optionalStr->pos;
-                --size;
-                if(size != 0) { listString += ", "; }
-            }
-
-            if(size != 0) { return std::nullopt; }
-            if(printParenthesis) { listString += rangeType == RangeType::list ? ']' : '}'; }
-            return {
-              {listString, first}
-            };
         }
 
-        // A bitflag arrives as a counted sequence of enumerators - the target cannot build the
-        // joined name, since only compile-time strings get cataloged. Rendered as one string rather
-        // than a list: the replacement field applies to the whole "a|b", so "{:>20}" pads the result
-        // and not each name. That is also why this does not go through fixRangeReplacementField.
-        //
-        // NOTE: elements are themselves parsed structures; recursion is bounded by their nesting.
-        template<typename Iterator>
-        ParseResult<Iterator>
-        parseBitflag(Iterator                               first,
-                     Iterator                               last,
-                     std::size_t                            size,
-                     RangeLayout                            rangeLayout,
-                     std::string_view                       replacementField,
-                     bool                                   in_list,
-                     std::unordered_map<std::uint16_t,
-                                        std::string> const& stringConstantsMap) {
-            if(rangeLayout != RangeLayout::on_ti_each) { return std::nullopt; }
-            if(size == 0) { return std::nullopt; }
+        // ---- names
 
+        struct Name {
+            std::uint64_t    bits;   // grammar::enumeratorValue
+            std::string_view name;
+        };
+
+        static bool readNames(std::string_view&  d,
+                              std::vector<Name>& names) {
+            auto const k = grammar::number(d);
+            if(!k || !grammar::literal(d, ':')) { return false; }
+            for(std::uint64_t i = 0; i != *k; ++i) {
+                auto const v = grammar::enumeratorValue(d);
+                if(!v || !grammar::literal(d, ',')) { return false; }
+                auto const name = grammar::counted(d);
+                if(!name) { return false; }
+                names.push_back({*v, *name});
+            }
+            return true;
+        }
+
+        Text enumeration(bool              bitflag,
+                         std::string_view& d,
+                         Input&            in,
+                         std::string_view  field,
+                         bool              inList) {
+            if(d.empty()) { return malformed(); }
+            char const kind = d.front();
+            d.remove_prefix(1);
+            auto const size = grammar::size(d);
+            if(!size || (kind != 'i' && kind != 'u')) { return malformed(); }
+            std::vector<Name> names;
+            if(!readNames(d, names)) { return malformed(); }
+            std::int64_t asSigned{};
+            auto const   bits = integerBits(kind == 'i', *size, in, asSigned);
+            if(!bits) { return std::nullopt; }
+            if(!render) { return std::string{}; }
+
+            auto const asNumber = [&]() -> Text {
+                if(kind == 'i') { return signedValue(field, asSigned, *size); }
+                return unsignedValue(field, *bits, *size);
+            };
+            if(!bitflag) {
+                for(auto const& n : names) {
+                    if(n.bits == *bits) { return stringValue(field, n.name, inList, "enumerator"); }
+                }
+                return asNumber();
+            }
+            // As enchantum::contains_bitflag decides it: a bit no enumerator has, or 0 without a zero flag, is a
+            // number; 0 with one is its name; anything else the names of the flags it holds, joined with '|'.
+            std::uint64_t ors  = 0;
+            Name const*   zero = nullptr;
+            for(auto const& n : names) {
+                ors |= n.bits;
+                if(n.bits == 0 && zero == nullptr) { zero = &n; }
+            }
+            auto const v = *bits;
+            if(v == 0) {
+                if(zero != nullptr) { return stringValue(field, zero->name, inList, "bitflag"); }
+                return asNumber();
+            }
+            if((v & ~ors) != 0) { return asNumber(); }
             std::string joined;
-            while(size != 0) {
-                if(first == last) { return std::nullopt; }
-                // in_list false and the default field: the element must come back as the bare
-                // enumerator name, unquoted and unpadded, so the spec below sees the joined string.
-                auto const element = parseFromTypeId(first,
-                                                     last,
-                                                     Default_replacement_field,
-                                                     false,
-                                                     false,
-                                                     stringConstantsMap);
-                if(!element) { return std::nullopt; }
-                if(!joined.empty()) { joined += '|'; }
-                joined += element->str;
-                first = element->pos;
-                --size;
+            for(auto const& n : names) {
+                auto const flag = n.bits;
+                if(flag != 0 && (v & flag) == flag) {
+                    if(!joined.empty()) { joined += '|'; }
+                    joined += n.name;
+                }
             }
+            if(joined.empty()) { return asNumber(); }
+            return stringValue(field, joined, inList, "bitflag");
+        }
 
-            try {
-                auto const ret = [&]() {
-                    if(in_list && replacementField == Default_replacement_field) {
-                        return fmt::format("{:?}", joined);
+        // ---- format strings
+
+        // Renders `fmtString` with one argument per field, `argument(field)` producing each one's text, in order.
+        // Called once per field; `argument` with an empty field tells "no field left" (more arguments than fields).
+        template<typename Argument>
+        Text formatString(std::string_view fmtString,
+                          std::size_t      arguments,
+                          Argument&&       argument) {
+            std::string out;
+            if(render) { out.reserve(fmtString.size() * 2); }
+            std::string_view rest   = fmtString;
+            std::size_t      fields = 0;
+            while(true) {
+                auto const next = nextField(rest);
+                if(next.malformed()) {
+                    if(render) {
+                        return renderError(fmt::format("malformed format string {:?}", fmtString));
                     }
-                    return fmt::format(fmt::runtime(replacementField), joined);
-                }();
-                return {
-                  {ret, first}
-                };
-            } catch(std::exception const& e) {
-                errorMessagef(
-                  fmt::format("bad format for replacement field {:?}: {} (bitflag: "
-                              "\"{}\", in_list: {})\n",
-                              replacementField,
-                              e.what(),
-                              joined,
-                              in_list));
-                return std::nullopt;
+                    return malformed();
+                }
+                if(render) { appendLiteral(out, next.literal); }
+                if(next.field.empty()) { break; }
+                rest = next.rest;
+                if(next.error == ScanError::nested || !replacementFieldWithinLimits(next.field)) {
+                    if(render) {
+                        return renderError(
+                          fmt::format("replacement field {:?} is a dynamic spec or carries a "
+                                      "number above the limit of {}",
+                                      next.field,
+                                      maxReplacementFieldNumber));
+                    }
+                    return malformed();
+                }
+                if(fields == arguments) {
+                    if(render) {
+                        return renderError(fmt::format(
+                          "malformed format string {:?}: more fields than its {} arguments",
+                          fmtString,
+                          arguments));
+                    }
+                    return malformed();
+                }
+                ++fields;
+                auto const text = argument(next.field);
+                if(!text) { return std::nullopt; }
+                out += *text;
             }
+            if(fields != arguments) {
+                if(render) {
+                    return renderError(
+                      fmt::format("malformed format string {:?}: {} fields for {} arguments",
+                                  fmtString,
+                                  fields,
+                                  arguments));
+                }
+                return malformed();
+            }
+            return out;
         }
 
-        // Ranges nest through their elements, and every element goes through parseFromTypeId,
-        // so Max_nesting_depth bounds them.
-        template<typename Iterator>
-        ParseResult<Iterator>
-        parseRange(Iterator                               first,
-                   Iterator                               last,
-                   std::string_view                       replacementField,
-                   bool                                   in_list,
-                   bool                                   in_map,
-                   std::unordered_map<std::uint16_t,
-                                      std::string> const& stringConstantsMap) {
-            if(first == last) { return std::nullopt; }
-            auto const rangeTypeId = parseRangeTypeIdentifier(*first);
-            if(!rangeTypeId) { return std::nullopt; }
-            ++first;
-            auto const [rangeType, rangeSize, rangeLayout] = *rangeTypeId;
-
-            auto optionalSize = extractSize(first, last, rangeSizeToTypeSize(rangeSize));
-            if(!optionalSize) { return std::nullopt; }
-
-            first = optionalSize->second;
-            switch(rangeType) {
-            case RangeType::cataloged_string:
-                return parseCatalogedString(first,
-                                            last,
-                                            optionalSize->first,
-                                            rangeLayout,
-                                            replacementField,
-                                            in_list,
-                                            stringConstantsMap);
-            case RangeType::string:
-                return parseString(first,
-                                   last,
-                                   optionalSize->first,
-                                   rangeLayout,
-                                   replacementField,
-                                   in_list);
-            case RangeType::tuple:
-                return parseTuple(first,
-                                  last,
-                                  optionalSize->first,
-                                  rangeLayout,
-                                  replacementField,
-                                  in_map,
-                                  stringConstantsMap);
-            case RangeType::extendedTypeIdentifier:
-                return parseExtendedTypeIdentifier(first,
-                                                   last,
-                                                   optionalSize->first,
-                                                   replacementField,
-                                                   in_map,
-                                                   in_list,
-                                                   stringConstantsMap);
-            case RangeType::bitflag:
-                return parseBitflag(first,
-                                    last,
-                                    optionalSize->first,
-                                    rangeLayout,
-                                    replacementField,
-                                    in_list,
-                                    stringConstantsMap);
-            case RangeType::map: [[fallthrough]];
-            case RangeType::set: [[fallthrough]];
-            case RangeType::list:
-                return parseList(first,
-                                 last,
-                                 optionalSize->first,
-                                 rangeLayout,
-                                 replacementField,
-                                 rangeType,
-                                 stringConstantsMap);
+        // A list of descriptors, one per argument
+        static std::optional<std::vector<std::string_view>> splitDescriptors(std::string_view d) {
+            std::vector<std::string_view> out;
+            while(!d.empty()) {
+                auto const one = grammar::take(d);
+                if(!one) { return std::nullopt; }
+                out.push_back(*one);
             }
-
-            return std::nullopt;
+            return out;
         }
 
-        // Dispatches on the type identifier. It recurses only via parseRange, which reaches its
-        // elements through parseFromTypeId, so Max_nesting_depth bounds it.
-        template<typename Iterator>
-        ParseResult<Iterator> parseType(Iterator                               first,
-                                        Iterator                               last,
-                                        std::string_view                       replacementField,
-                                        bool                                   in_list,
-                                        bool                                   in_map,
-                                        std::unordered_map<std::uint16_t,
-                                                           std::string> const& stringConstantsMap) {
-            if(first == last) { return std::nullopt; }
-            auto const typeId = parseTypeIdentifier(*first);
-            switch(typeId) {
-            case TypeIdentifier::fmt_string: return std::nullopt;
-            case TypeIdentifier::trivial:
-                return parseTrivial(first, last, replacementField, in_list);
-            case TypeIdentifier::time: return parseTime(first, last, replacementField);
-            case TypeIdentifier::range:
-                return parseRange(first,
-                                  last,
-                                  replacementField,
-                                  in_list,
-                                  in_map,
-                                  stringConstantsMap);
-            }
-            return std::nullopt;
-        }
-
-        template<typename Iterator>
-        ParseResult<Iterator>
-        parseFmtString(Iterator                               first,
-                       Iterator                               last,
-                       FmtStringType                          type,
-                       std::unordered_map<std::uint16_t,
-                                          std::string> const& stringConstantsMap) {
-            auto iterator             = first;
-            auto optionalFmtRangeSize = parseFmtStringTypeIdentifier(*iterator, type);
-            if(!optionalFmtRangeSize) { return std::nullopt; }
-            ++iterator;
-            auto optionalSize
-              = extractSize(iterator, last, rangeSizeToTypeSize(*optionalFmtRangeSize));
-            if(!optionalSize) { return std::nullopt; }
-
-            iterator = optionalSize->second;
-
-            auto const fmtStringSize = optionalSize->first;
-
-            std::string fmtString;
-            if(type == FmtStringType::normal || type == FmtStringType::sub) {
-                if(fmtStringSize > static_cast<std::size_t>(std::distance(iterator, last))) {
-                    return std::nullopt;
-                }
-
-                fmtString.resize(fmtStringSize);
-
-                std::transform(
-                  iterator,
-                  std::next(iterator, static_cast<std::make_signed_t<std::size_t>>(fmtStringSize)),
-                  fmtString.begin(),
-                  [](auto byte) { return static_cast<char>(byte); });
-
-                std::advance(iterator, fmtStringSize);
-            } else {
-                auto const fmtStringIt
-                  = stringConstantsMap.find(static_cast<std::uint16_t>(fmtStringSize));
-                if(fmtStringIt == stringConstantsMap.end()) {
-                    errorMessagef(
-                      fmt::format("cataloged format string not found {}", fmtStringSize));
-                    return std::nullopt;
-                }
-
-                fmtString = fmtStringIt->second;
-            }
-
-            if(!checkReplacementFieldCount(fmtString)) { return std::nullopt; }
-
-            // an inline string came over the wire; a cataloged one is the build's own
-            bool const isInline = type == FmtStringType::normal || type == FmtStringType::sub;
-            if(!(isInline ? allCharsValid(fmtString) : allCharsValidCataloged(fmtString))) {
-                return std::nullopt;
-            }
-            return {
-              {fmtString, iterator}
-            };
-        }
-
-        // A format string's own arguments are parsed through parseFromTypeId, so a sub format
-        // string nested inside another is bounded by Max_nesting_depth.
-        template<typename Iterator>
-        ParseResult<Iterator> parseFmt(Iterator                               first,
-                                       Iterator                               last,
-                                       FmtStringType                          type,
-                                       std::unordered_map<std::uint16_t,
-                                                          std::string> const& stringConstantsMap) {
-            auto       iterator          = first;
-            auto const optionalFmtString = parseFmtString(iterator, last, type, stringConstantsMap);
-
-            if(!optionalFmtString) { return std::nullopt; }
-            std::string_view fmtString = optionalFmtString->str;
-            iterator                   = optionalFmtString->pos;
-
-            std::string ret;
-            // Reserve space based on format string length to reduce reallocations
-            ret.reserve(fmtString.size() * 2);
-            while(iterator != last) {
-                auto const next
-                  = getNextReplacementFieldFromFmtStringAndAppendStrings(ret, fmtString);
-                if(next.malformed) {
-                    errorMessagef(
-                      fmt::format("malformed format string {:?}", optionalFmtString->str));
-                    return std::nullopt;
-                }
-                if(!next.field) { break; }
-                if(!replacementFieldWithinLimits(*next.field)) {
-                    errorMessagef(
-                      fmt::format("replacement field {:?} is a dynamic spec or carries a number "
-                                  "above the limit "
-                                  "of {}",
-                                  *next.field,
-                                  Max_replacement_field_number));
-                    return std::nullopt;
-                }
-                auto const optionalStr
-                  = parseFromTypeId(iterator, last, *next.field, false, false, stringConstantsMap);
-                if(!optionalStr) { return std::nullopt; }
-                iterator = optionalStr->pos;
-                ret += optionalStr->str;
-            }
-            if(!fmtString.empty()) { return std::nullopt; }
-            return {
-              {ret, iterator}
-            };
+        // the format string with its arguments read off the wire by their descriptors
+        Text described(std::string_view                     fmtString,
+                       std::vector<std::string_view> const& descriptors,
+                       Input&                               in) {
+            std::size_t next = 0;
+            return formatString(fmtString, descriptors.size(), [&](std::string_view field) -> Text {
+                std::string_view d = descriptors[next++];
+                return value(d, in, field, false, false);
+            });
         }
 
         /// A sub format string is already text by the time the outer replacement field is seen:
-        /// parseFmt has rendered its literal characters and every one of its arguments. So a
-        /// presentation type that needs a value - ".2f", "#x", "%H" - has nothing left to act on
-        /// and is an error, and pushing it down into the sub string's own fields is no answer
-        /// either, since "{} {}" would apply it to both. Everything fmt accepts on a string,
-        /// though - width, fill, align, precision-as-truncation, "s" - is meaningful and is
-        /// applied here rather than thrown away.
+        /// every one of its arguments is rendered. So a presentation type that needs a value - ".2f", "#x", "%H" - has
+        /// nothing left to act on and is an error, and pushing it down into the sub string's own fields is no answer
+        /// either, since "{} {}" would apply it to both. Everything fmt accepts on a string, though - width, fill,
+        /// align, precision-as-truncation, "s" - is meaningful and is applied here rather than thrown away.
         ///
         /// in_list deliberately plays no part: the result is a formatted representation, not a
         /// string value, so it does not pick up fmt's debug quoting inside a range.
-        template<typename Iterator>
-        ParseResult<Iterator> applyFieldToSubFmtString(std::string_view replacementField,
-                                                       ParseResult_<Iterator> const& rendered) {
-            if(replacementField == Default_replacement_field) { return rendered; }
-
+        Text applyFieldToSubFmtString(std::string_view field,
+                                      Text const&      rendered) {
+            if(!rendered) { return std::nullopt; }
+            if(!render || field == defaultReplacementField) { return rendered; }
             try {
-                return ParseResult_<Iterator>{
-                  fmt::format(fmt::runtime(replacementField), rendered.str),
-                  rendered.pos};
+                return fmt::format(fmt::runtime(field), *rendered);
             } catch(std::exception const& e) {
-                errorMessagef(fmt::format(
+                return renderError(fmt::format(
                   "bad format for replacement field {:?}: {} - a formatter built on format_to "
                   "renders to a string on the host, so only a string spec can apply to it "
                   "(sub format string result: {:?})",
-                  replacementField,
+                  field,
                   e.what(),
-                  rendered.str));
-                return std::nullopt;
+                  *rendered));
             }
         }
 
-        // Every recursive path goes through here - list, set and map elements, tuple and bitflag
-        // elements, the value inside an optional/expected/variant/styled, and a sub format string's
-        // own arguments - so this is the one place the depth has to be counted.
-        template<typename Iterator>
-        ParseResult<Iterator>
-        parseFromTypeId(Iterator                               first,
-                        Iterator                               last,
-                        std::string_view                       replacementField,
-                        bool                                   in_list,
-                        bool                                   in_map,
-                        std::unordered_map<std::uint16_t,
-                                           std::string> const& stringConstantsMap) {
-            if(first == last) { return std::nullopt; }
+        struct DescribedString {
+            std::string_view              fmtString;
+            std::vector<std::string_view> descriptors;
+        };
 
-            if(nestingDepth >= Max_nesting_depth) {
-                errorMessagef(fmt::format("nesting deeper than {} levels", Max_nesting_depth));
+        // A described string - the catalog's, or an inline one off the wire - split at its separator; its format
+        // string checked with the grammar and its characters checked (an inline one must stay ASCII).
+        std::optional<DescribedString> split(std::string_view text,
+                                             bool             isInline) {
+            auto const at = text.find(desc::separator);
+            if(at == std::string_view::npos) { return std::nullopt; }
+            DescribedString out{text.substr(0, at), {}};
+            if(!formatShape(out.fmtString).wellFormed) { return std::nullopt; }
+            if(!(isInline ? allCharsValid(out.fmtString) : allCharsValidCataloged(out.fmtString))) {
                 return std::nullopt;
+            }
+            auto descriptors = splitDescriptors(text.substr(at + 1));
+            if(!descriptors) {
+                errorMessagef(fmt::format(
+                  "a descriptor this parser cannot read (nesting deeper than {} levels, or "
+                  "malformed): {:?}",
+                  grammar::maxDepth,
+                  text.substr(at + 1, 120)));
+                return std::nullopt;
+            }
+            out.descriptors = std::move(*descriptors);
+            return out;
+        }
+
+        // the string an id names: the catalog's, or (inlineId) the one that follows on the wire
+        std::optional<std::string_view> stringOf(std::uint16_t id,
+                                                 Input&        in,
+                                                 bool&         isInline) {
+            isInline = id == protocol::inlineId;
+            if(isInline) {
+                auto const length = in.varint();
+                if(!length) {
+                    if(in.left() == 0) {
+                        shortData();
+                    } else {
+                        malformed();
+                    }
+                    return std::nullopt;
+                }
+                if(*length > in.left()) {
+                    shortData();
+                    return std::nullopt;
+                }
+                auto const text = in.bytes.subspan(in.pos, static_cast<std::size_t>(*length));
+                in.pos += text.size();
+                return std::string_view{reinterpret_cast<char const*>(text.data()), text.size()};
+            }
+            if(strings != nullptr) {
+                if(auto const it = strings->find(id); it != strings->end()) {
+                    return std::string_view{it->second};
+                }
+            }
+            if(render) { errorMessagef(fmt::format("cataloged format string not found {}", id)); }
+            malformed();
+            return std::nullopt;
+        }
+
+        // `*`: a sub format string by its id (or inline), then its arguments
+        Text selfDescribed(Input&           in,
+                           std::string_view field) {
+            auto const id = in.raw(2);
+            if(!id) { return shortData(); }
+            bool       isInline{};
+            auto const text = stringOf(static_cast<std::uint16_t>(*id), in, isInline);
+            if(!text) { return std::nullopt; }
+            auto const parts = split(*text, isInline);
+            if(!parts) { return malformed(); }
+            return applyFieldToSubFmtString(field,
+                                            described(parts->fmtString, parts->descriptors, in));
+        }
+
+        // ---- one value
+
+        // Every recursive path goes through here - elements of ranges and tuples, wrapped values, the arguments of a
+        // sub format string - so this is the one place the depth has to be counted.
+        Text value(std::string_view& d,
+                   Input&            in,
+                   std::string_view  field,
+                   bool              inList,
+                   bool              inMap) {
+            if(nestingDepth >= maxNestingDepth) {
+                // said in either walk: the frame is refused in the first
+                errorMessagef(fmt::format("nesting deeper than {} levels", maxNestingDepth));
+                return malformed();
             }
             NestingGuard const guard{nestingDepth};
 
-            TypeIdentifier const typeId = static_cast<TypeIdentifier>(*first & std::byte{0x03});
-            if(typeId == TypeIdentifier::fmt_string) {
-                FmtStringType const subType
-                  = parseFmtStringTypeIdentifier(*first, FmtStringType::sub)
-                    ? FmtStringType::sub
-                    : FmtStringType::cataloged_sub;
-                if(!parseFmtStringTypeIdentifier(*first, subType)) { return std::nullopt; }
-
-                auto const rendered = parseFmt(first, last, subType, stringConstantsMap);
-                if(!rendered) { return std::nullopt; }
-                return applyFieldToSubFmtString(replacementField, *rendered);
+            if(d.empty()) { return malformed(); }
+            char const tag = d.front();
+            d.remove_prefix(1);
+            switch(tag) {
+            case 'b':
+                {
+                    auto const b = in.byte();
+                    if(!b) { return shortData(); }
+                    return boolValue(field, *b);
+                }
+            case 'c':
+                {
+                    auto const b = in.byte();
+                    if(!b) { return shortData(); }
+                    return rawCharacter(static_cast<char>(*b), field, inList);
+                }
+            case 'u':
+            case 'i':
+                {
+                    auto const size = grammar::size(d);
+                    if(!size) { return malformed(); }
+                    return integer(field, tag == 'i', *size, in);
+                }
+            case 'f':
+                {
+                    auto const size = grammar::size(d);
+                    if(!size || (*size != 4 && *size != 8)) { return malformed(); }
+                    return rawScalar('f', *size, in, field, inList);
+                }
+            case 'p':
+                {
+                    auto const size = grammar::size(d);
+                    if(!size || (*size != 4 && *size != 8)) { return malformed(); }
+                    auto const bits = in.raw(*size);
+                    if(!bits) { return shortData(); }
+                    return formatted(
+                      field,
+                      std::bit_cast<void const*>(static_cast<std::uintptr_t>(*bits)),
+                      [&] { return fmt::format("type: pointer, size: {} bytes", *size); });
+                }
+            case 's':
+                {
+                    auto const length = in.varint();
+                    if(!length) { return in.left() == 0 ? shortData() : malformed(); }
+                    if(*length > in.left()) { return shortData(); }
+                    auto const bytes = in.bytes.subspan(in.pos, static_cast<std::size_t>(*length));
+                    in.pos += bytes.size();
+                    std::string_view const text{reinterpret_cast<char const*>(bytes.data()),
+                                                bytes.size()};
+                    return stringValue(field, text, inList, "string");
+                }
+            case 'k':
+                {
+                    auto const text = grammar::counted(d);
+                    if(!text) { return malformed(); }
+                    return stringValue(field, *text, inList, "string");
+                }
+            case 'd': return time(d, in, field);
+            case 'O':
+                {
+                    auto const engaged = in.byte();
+                    if(!engaged) { return shortData(); }
+                    if(*engaged > 1) { return malformed(); }
+                    if(*engaged == 0) {
+                        if(!grammar::skip(d)) { return malformed(); }
+                        return render ? Text{"none"} : Text{std::string{}};
+                    }
+                    // in_list forced true rather than forwarded: a wrapper payload is a nested position,
+                    // so fmt keeps applying its debug format inside optional(...) - optional("s") and
+                    // optional('c'), not optional(s) and optional(c).
+                    auto const inner = value(d, in, field, true, inMap);
+                    if(!inner) { return std::nullopt; }
+                    return render ? fmt::format("optional({})", *inner) : std::string{};
+                }
+            case 'X':
+                {
+                    auto const hasValue = in.byte();
+                    if(!hasValue) { return shortData(); }
+                    if(*hasValue > 1) { return malformed(); }
+                    if(*hasValue == 0 && !grammar::skip(d)) { return malformed(); }
+                    // in_list forced true for the same reason as optional: fmt writes expected("ok") and
+                    // unexpected("err"), keeping the debug format inside the wrapper.
+                    auto const inner = value(d, in, field, true, inMap);
+                    if(!inner) { return std::nullopt; }
+                    if(*hasValue == 1 && !grammar::skip(d)) { return malformed(); }
+                    if(!render) { return std::string{}; }
+                    // A void value renders as the empty string, so this yields fmt's "expected()".
+                    return fmt::format("{}({})",
+                                       *hasValue == 1 ? "expected" : "unexpected",
+                                       *inner);
+                }
+            case 'v': return std::string{};
+            case 'V':
+                {
+                    auto const n = grammar::number(d);
+                    if(!n || !grammar::literal(d, ':')) { return malformed(); }
+                    auto const index = in.byte();
+                    if(!index) { return shortData(); }
+                    if(*index >= *n) { return malformed(); }
+                    for(std::uint64_t i = 0; i != *index; ++i) {
+                        if(!grammar::skip(d)) { return malformed(); }
+                    }
+                    auto const inner = value(d, in, field, true, inMap);
+                    if(!inner) { return std::nullopt; }
+                    for(std::uint64_t i = *index + 1; i < *n; ++i) {
+                        if(!grammar::skip(d)) { return malformed(); }
+                    }
+                    return render ? fmt::format("variant({})", *inner) : std::string{};
+                }
+            case 'L':
+            case 'S':
+            case 'M':
+            case 'A': return range(tag, d, in, field);
+            case '(': return tuple(d, in, field, inMap);
+            case 'Q': return quantity(d, in, field, inList, inMap);
+            case 'Y': return styled(d, in, field, inList, inMap);
+            case 'F':
+                {
+                    auto const fmtString = grammar::counted(d);
+                    auto const k         = grammar::number(d);
+                    if(!fmtString || !k || !grammar::literal(d, ':')) { return malformed(); }
+                    std::vector<std::string_view> descriptors;
+                    for(std::uint64_t i = 0; i != *k; ++i) {
+                        auto const one = grammar::take(d);
+                        if(!one) { return malformed(); }
+                        descriptors.push_back(*one);
+                    }
+                    if(!formatShape(*fmtString).wellFormed) { return malformed(); }
+                    return applyFieldToSubFmtString(field, described(*fmtString, descriptors, in));
+                }
+            case 'E':
+            case 'G': return enumeration(tag == 'G', d, in, field, inList);
+            case 'R': return reg(d, in, field);
+            case 'r': return flags(d, in, field, inList);
+            case '*': return selfDescribed(in, field);
+            case '#':
+                // said in the first walk, which refuses the frame
+                errorMessagef(
+                  "a type reference without its entry: the catalog has no \"Types\" entry for it "
+                  "(a "
+                  "catalog of another build?)");
+                return malformed();
+            default: return malformed();
             }
-            return parseType(first, last, replacementField, in_list, in_map, stringConstantsMap);
+        }
+
+        Text rawCharacter(char             c,
+                          std::string_view field,
+                          bool             inList) {
+            if(!render) { return std::string{}; }
+            // A char nested in a range or tuple gets fmt's debug format ('x', with control bytes escaped),
+            // matching what fmt does for the same container. Only chars: fmt leaves the other trivial types
+            // alone inside containers.
+            if(inList && field == defaultReplacementField) { return fmt::format("{:?}", c); }
+            return formatted(field, c, [] { return std::string{"type: char, size: 1 bytes"}; });
+        }
+
+        /// The value is rendered with the caller's own replacement field, so a quantity takes the spec its
+        /// representation would have taken: "{:.2f}" on a float quantity, "{:#x}" on an integral one. Fill, align and
+        /// width are held back and applied to number and symbol together, so "{:>10}" positions "1.5 V" the way it
+        /// would position any other argument.
+        Text quantity(std::string_view& d,
+                      Input&            in,
+                      std::string_view  field,
+                      bool              inList,
+                      bool              inMap) {
+            auto const symbol = grammar::counted(d);
+            if(!symbol) { return malformed(); }
+            auto const [padField, valueField] = splitFillAlignWidth(field);
+            auto const number                 = value(d, in, valueField, inList, inMap);
+            if(!number) { return std::nullopt; }
+            if(!render) { return std::string{}; }
+            auto text = fmt::format("{}{}", *number, *symbol);   // not const: returned by move
+            if(padField == "{}") { return text; }
+            try {
+                return fmt::format(fmt::runtime(padField), text);
+            } catch(std::exception const& e) {
+                return renderError(
+                  fmt::format("bad format for replacement field {:?}: {} (quantity: \"{}\")",
+                              field,
+                              e.what(),
+                              text));
+            }
+        }
+
+        Text styled(std::string_view& d,
+                    Input&            in,
+                    std::string_view  field,
+                    bool              inList,
+                    bool              inMap) {
+            auto const set = in.byte();
+            if(!set) { return shortData(); }
+            if((*set & 0xC0U) != 0) { return malformed(); }
+            bool const fgRgb  = 0 != (*set & 1U);
+            bool const fgTerm = 0 != (*set & 2U);
+            bool const bgRgb  = 0 != (*set & 4U);
+            bool const bgTerm = 0 != (*set & 8U);
+            bool const emp    = 0 != (*set & 16U);
+
+            if((fgRgb && fgTerm) || (bgRgb && bgTerm) || (fgTerm && (bgTerm || bgRgb))
+               || (bgTerm && (fgTerm || fgRgb)))
+            {
+                return malformed();
+            }
+            fmt::text_style style{};
+            bool            bad   = false;
+            bool            ran   = false;
+            auto const      color = [&](bool rgb, bool term, auto gen) {
+                if(rgb) {
+                    auto const c = in.raw(4);
+                    if(!c) {
+                        ran = true;
+                        return;
+                    }
+                    if(*c >= (1U << 25U)) {
+                        bad = true;
+                        return;
+                    }
+                    style |= gen(static_cast<fmt::color>(*c));
+                }
+                if(term) {
+                    auto const c = in.byte();
+                    if(!c) {
+                        ran = true;
+                        return;
+                    }
+                    if(!enchantum::contains<fmt::terminal_color>(
+                         static_cast<std::underlying_type_t<fmt::terminal_color>>(*c)))
+                    {
+                        bad = true;
+                        return;
+                    }
+                    style |= gen(static_cast<fmt::terminal_color>(*c));
+                }
+            };
+            color(fgRgb, fgTerm, [](auto v) { return fmt::fg(v); });
+            if(!bad && !ran) {
+                color(bgRgb, bgTerm, [](auto v) { return fmt::bg(v); });
+            }
+            if(ran) { return shortData(); }
+            if(bad) { return malformed(); }
+            if(emp) {
+                auto const e = in.byte();
+                if(!e) { return shortData(); }
+                style |= fmt::text_style{static_cast<fmt::emphasis>(*e)};
+            }
+            auto const inner = value(d, in, field, inList, inMap);
+            if(!inner) { return std::nullopt; }
+            if(!render) { return std::string{}; }
+            try {
+                return fmt::format("{}", fmt::styled(*inner, style));
+            } catch(std::exception const& e) {
+                return renderError(fmt::format("bad style: {}", e.what()));
+            }
+        }
+
+        // The value descriptor of a register or Flags: an unsigned integer (`u<size>`); nullopt for anything else
+        static std::optional<std::size_t> wordSize(std::string_view& d) {
+            if(!grammar::literal(d, 'u')) { return std::nullopt; }
+            return grammar::size(d);
+        }
+
+        // the largest value of a word of `size` bytes: no mask may reach past it
+        static constexpr std::uint64_t wordMax(std::size_t size) {
+            return size >= 8 ? ~std::uint64_t{} : (std::uint64_t{1} << (8U * size)) - 1U;
+        }
+
+        // A register: the raw word (its value descriptor), cut into its fields by the masks, each a number or its
+        // value's name, rendered with the register's own format string (dims first), as a sub format string.
+        Text reg(std::string_view& d,
+                 Input&            in,
+                 std::string_view  field) {
+            auto const size = wordSize(d);
+            if(!size) { return malformed(); }
+            auto const fmtString = grammar::counted(d);
+            if(!fmtString) { return malformed(); }
+            auto const dimCount = grammar::number(d);
+            if(!dimCount || !grammar::literal(d, ':')) { return malformed(); }
+            std::vector<std::uint64_t> dims;
+            for(std::uint64_t i = 0; i != *dimCount; ++i) {
+                auto const dim = grammar::number(d);
+                if(!dim || !grammar::literal(d, ',')) { return malformed(); }
+                dims.push_back(*dim);
+            }
+            auto const fieldCount = grammar::number(d);
+            if(!fieldCount || !grammar::literal(d, ':')) { return malformed(); }
+
+            struct Field {
+                std::uint64_t     mask;
+                std::vector<Name> names;
+            };
+
+            std::vector<Field> fields;
+            for(std::uint64_t i = 0; i != *fieldCount; ++i) {
+                auto const mask = grammar::number(d);
+                if(!mask || *mask > wordMax(*size) || !grammar::literal(d, ',')) {
+                    return malformed();
+                }
+                Field f{*mask, {}};
+                if(!readNames(d, f.names)) { return malformed(); }
+                fields.push_back(std::move(f));
+            }
+            std::int64_t unusedSigned{};
+            auto const   raw = integerBits(false, *size, in, unusedSigned);
+            if(!raw) { return std::nullopt; }
+            if(!render) { return std::string{}; }
+            if(!formatShape(*fmtString).wellFormed) { return malformed(); }
+
+            auto const  word = *raw;
+            std::size_t next = 0;
+            auto const  text = formatString(
+              *fmtString,
+              dims.size() + fields.size(),
+              [&](std::string_view f) -> Text {
+                  auto const i = next++;
+                  if(i < dims.size()) {
+                      return formatted(f, dims[i], [] { return std::string{"register dim"}; });
+                  }
+                  auto const& fd = fields[i - dims.size()];
+                  auto const  v = fd.mask == 0 ? 0U : (word & fd.mask) >> std::countr_zero(fd.mask);
+                  for(auto const& n : fd.names) {
+                      if(n.bits == v) { return stringValue(f, n.name, false, "field value"); }
+                  }
+                  return formatted(f, v, [] { return std::string{"register field"}; });
+              });
+            return applyFieldToSubFmtString(field, text);
+        }
+
+        // Register::Flags: the names of the set single-bit fields of the raw word (its value descriptor) joined with
+        // '|', "none" when none is set
+        Text flags(std::string_view& d,
+                   Input&            in,
+                   std::string_view  field,
+                   bool              inList) {
+            auto const size = wordSize(d);
+            if(!size) { return malformed(); }
+            auto const count = grammar::number(d);
+            if(!count || !grammar::literal(d, ':')) { return malformed(); }
+
+            struct Flag {
+                std::uint64_t    mask;
+                std::string_view name;
+            };
+
+            std::vector<Flag> flagList;
+            for(std::uint64_t i = 0; i != *count; ++i) {
+                auto const mask = grammar::number(d);
+                if(!mask || *mask > wordMax(*size) || !grammar::literal(d, ',')) {
+                    return malformed();
+                }
+                auto const name = grammar::counted(d);
+                if(!name) { return malformed(); }
+                flagList.push_back({*mask, *name});
+            }
+            std::int64_t unusedSigned{};
+            auto const   raw = integerBits(false, *size, in, unusedSigned);
+            if(!raw) { return std::nullopt; }
+            if(!render) { return std::string{}; }
+            std::string joined;
+            for(auto const& f : flagList) {
+                if((*raw & f.mask) != 0) {
+                    if(!joined.empty()) { joined += '|'; }
+                    joined += f.name;
+                }
+            }
+            if(joined.empty()) { joined = "none"; }
+            return stringValue(field, joined, inList, "bitflag");
         }
     };
 }   // namespace detail
-
-// What the reader knows about the image's frames, from its catalog ("FrameCheck", tools/extract_sites.py): `required`
-// - the image checks every frame, so only checked frames (0x56) are frames, and an unchecked one is refused; `none` -
-// an image built without the check: only 0x55 frames; `either` - nothing known (tests, a catalog of unknown age).
-enum class FrameCheck { either, required, none };
-
-constexpr bool isFrameStart(std::byte  b,
-                            FrameCheck expect) {
-    switch(expect) {
-    case FrameCheck::required: return b == protocol::Checked_start_marker;
-    case FrameCheck::none:     return b == protocol::Start_marker;
-    case FrameCheck::either:   break;
-    }
-    return protocol::isStartMarker(b);
-}
 
 struct ParsedMessage {
     std::optional<std::string> message;
@@ -1500,130 +1288,161 @@ struct ParsedMessage {
     std::optional<catalog_id>  catalogId;
 };
 
+// What a parse error is about, for an error callback that takes it as its second argument. `stream`: bytes that make
+// no frame, or a frame that does not check out - skipped, the reader resyncs past them. `format`: a whole frame whose
+// text the host could not render (fmt refused a replacement field or a style, a time value out of range, ...) -
+// consumed, its line lost to its format string.
+enum class ParseError : std::uint8_t { stream, format };
+
+// An error callback is `(text)` or `(text, ParseError)`: this calls either.
+template<typename ErrorMessageF>
+inline void sayParseError(ErrorMessageF&     errorMessagef,
+                          std::string const& text,
+                          ParseError         kind) {
+    if constexpr(std::is_invocable_v<ErrorMessageF&, std::string const&, ParseError>) {
+        errorMessagef(text, kind);
+    } else {
+        errorMessagef(text);
+    }
+}
+
+// One frame off the front of `buffer` (after any bytes that make none): its text, the rest, the bytes skipped, the id.
+// No message and the buffer as it was (minus the skipped bytes): the frame at its front is still arriving.
+// Every problem is said through `errorMessagef`: `(text)`, or `(text, ParseError)` to tell a stream error from a
+// line lost to its format.
 template<typename ErrorMessageF>
 inline ParsedMessage parseMessage(std::span<std::byte const>             buffer,
                                   std::unordered_map<std::uint16_t,
                                                      std::string> const& stringConstantsMap,
                                   ErrorMessageF&&                        errorMessagef,
                                   FrameCheck expect = FrameCheck::either) {
-    std::size_t unparsed_bytes{};
+    std::size_t unparsedBytes{};
     auto const  isStart = [expect](std::byte b) { return isFrameStart(b, expect); };
-    // a frame of the other kind than the catalog says (a wrong catalog, an old image): refused, said once a call
+    // a frame of the other kind than the catalog says: refused, said once a call
     bool       foreignTold = false;
     auto const foreign     = [&](std::span<std::byte const> at) {
-        if(foreignTold || expect == FrameCheck::either || at.size() < 2 || isStart(at[0])
-           || !protocol::isStartMarker(at[0]))
-        {
-            return;
-        }
-        if(detail::parseFmtStringTypeIdentifier(at[1], detail::FmtStringType::normal)
-           || detail::parseFmtStringTypeIdentifier(at[1], detail::FmtStringType::cataloged_normal))
-        {
-            foreignTold = true;
-            errorMessagef(
-              expect == FrameCheck::required
-                ? std::string{"an unchecked frame from an image whose catalog says it checks its "
-                              "frames: "
-                              "refused (the catalog is not this image's?)"}
-                : std::string{
-                    "a checked frame from an image whose catalog says it has no frame check: "
-                    "refused (the catalog is not this image's?)"});
-        }
+        if(foreignTold || at.size() < 3 || isStart(at[0])) { return; }
+        if(expect == FrameCheck::either || !protocol::isStartMarker(at[0])) { return; }
+        catalog_id const id = static_cast<catalog_id>(std::to_integer<unsigned>(at[1])
+                                                      | (std::to_integer<unsigned>(at[2]) << 8U));
+        if(id != protocol::inlineId && !stringConstantsMap.contains(id)) { return; }
+        foreignTold = true;
+        sayParseError(
+          errorMessagef,
+          expect == FrameCheck::required
+            ? std::
+                string{"an unchecked frame from an image whose catalog says it checks its frames: "
+                       "refused (the catalog is not this image's?)"}
+            : std::string{"a checked frame from an image whose catalog says it has no frame check: "
+                          "refused (the catalog is not this image's?)"},
+          ParseError::stream);
+    };
+    bool       unknownTold = false;
+    auto const skipOne     = [&] {
+        unparsedBytes += 1;
+        buffer = buffer.subspan(1);
     };
     while(true) {
-        while(!buffer.empty()) {
-            for(std::size_t k = 0; k + 1 < buffer.size() && !foreignTold && !isStart(buffer[k]);
-                ++k)
-            {
-                if(protocol::isStartMarker(buffer[k])) { foreign(buffer.subspan(k)); }
+        for(std::size_t k = 0; k + 2 < buffer.size() && !foreignTold && !isStart(buffer[k]); ++k) {
+            foreign(buffer.subspan(k));
+        }
+        auto const        iterator = std::ranges::find_if(buffer, isStart);
+        std::size_t const offset
+          = static_cast<std::size_t>(std::distance(buffer.begin(), iterator));
+        buffer = buffer.subspan(offset);
+        unparsedBytes += offset;
+
+        if(buffer.size() < 3) { return {std::nullopt, buffer, unparsedBytes, {}}; }
+        bool const       checked = buffer[0] == protocol::checkedStartMarker;
+        catalog_id const id      = static_cast<catalog_id>(
+          std::to_integer<unsigned>(buffer[1]) | (std::to_integer<unsigned>(buffer[2]) << 8U));
+        // a known id or an inline string: anything else is no frame start (resync) - said once a call, as an image
+        // newer than its catalog would lose every new line in silence otherwise
+        if(id != protocol::inlineId && !stringConstantsMap.contains(id)) {
+            if(!unknownTold) {
+                unknownTold = true;
+                sayParseError(
+                  errorMessagef,
+                  fmt::format("cataloged format string not found {}: skipped as no frame (the "
+                              "catalog is not this image's?)",
+                              id),
+                  ParseError::stream);
             }
-            auto const        iterator = std::ranges::find_if(buffer, isStart);
-            std::size_t const offset
-              = static_cast<std::size_t>(std::distance(buffer.begin(), iterator));
-            buffer = buffer.subspan(offset);
-            unparsed_bytes += offset;
-            if(2 > buffer.size()
-               || detail::parseFmtStringTypeIdentifier(buffer[1], detail::FmtStringType::normal)
-               || detail::parseFmtStringTypeIdentifier(buffer[1],
-                                                       detail::FmtStringType::cataloged_normal))
-            {
-                break;
-            }
-            unparsed_bytes += 1;
-            buffer = buffer.subspan(1);
+            skipOne();
+            continue;
         }
 
-        bool const contains_end = std::ranges::find(buffer, protocol::End_marker) != buffer.end();
-
-        if(2 > buffer.size() || !contains_end) {
-            return {std::nullopt, buffer, unparsed_bytes, {}};
-        }
-
-        bool const checked = buffer[0] == protocol::Checked_start_marker;
-
-        detail::FmtStringType const fmtStringType = [&]() {
-            if(detail::parseFmtStringTypeIdentifier(buffer[1], detail::FmtStringType::normal)) {
-                return detail::FmtStringType::normal;
+        // what the parser says in the first walk is about the bytes; in the second, the frame is whole and checked,
+        // so what it says there is about rendering its text
+        ParseError     phase = ParseError::stream;
+        detail::Parser parser{
+          [&](std::string_view m) { sayParseError(errorMessagef, std::string{m}, phase); },
+          &stringConstantsMap};
+        // first walk: the frame's structure and its exact end, nothing rendered
+        detail::Input                                  in{buffer, 3};
+        bool                                           isInline{};
+        auto const                                     text = parser.stringOf(id, in, isInline);
+        std::optional<detail::Parser::DescribedString> parts;
+        if(text) { parts = parser.split(*text, isInline); }
+        if(text && !parts) { parser.stop = detail::Parser::Stop::malformed; }
+        if(parts) {
+            for(auto d : parts->descriptors) {
+                if(!parser.value(d, in, detail::defaultReplacementField, false, false)) { break; }
             }
-            return detail::FmtStringType::cataloged_normal;
-        }();
-
-        detail::Parser parser{errorMessagef};
-        auto const     optionalStr = parser.parseFmt(std::next(buffer.begin()),
-                                                     buffer.end(),
-                                                     fmtStringType,
-                                                     stringConstantsMap);
-
-        if(!optionalStr) { return {std::nullopt, buffer, unparsed_bytes, {}}; }
-        auto end = optionalStr->pos;
+        }
+        if(parser.stop == detail::Parser::Stop::shortData) {
+            return {std::nullopt, buffer, unparsedBytes, {}};
+        }
+        if(parser.stop != detail::Parser::Stop::none) {
+            skipOne();
+            continue;
+        }
+        std::size_t end = in.pos;
         if(checked) {
             // the CRC byte, then the end marker; a frame that does not add up is no frame: skip its start
             // marker and look for the next one, rather than wait for bytes that would not help
-            if(end == buffer.end() || std::next(end) == buffer.end()) {
-                return {std::nullopt, buffer, unparsed_bytes, {}};
-            }
-            auto const covered = static_cast<std::size_t>(std::distance(buffer.begin(), end));
+            if(buffer.size() < end + 2) { return {std::nullopt, buffer, unparsedBytes, {}}; }
             auto const want
-              = protocol::crcFinal(protocol::crcOver(protocol::CrcInit, buffer.first(covered)));
-            if(std::to_integer<std::uint8_t>(*end) != want
-               || *std::next(end) != protocol::End_marker)
+              = protocol::crcFinal(protocol::crcOver(protocol::crcInit, buffer.first(end)));
+            if(std::to_integer<std::uint8_t>(buffer[end]) != want
+               || buffer[end + 1] != protocol::endMarker)
             {
-                errorMessagef(fmt::format("frame check failed: a damaged frame of {} bytes dropped",
-                                          covered + 2));
-                unparsed_bytes += 1;
-                buffer = buffer.subspan(1);
+                sayParseError(
+                  errorMessagef,
+                  fmt::format("frame check failed: a damaged frame of {} bytes dropped", end + 2),
+                  ParseError::stream);
+                skipOne();
                 continue;
             }
             ++end;
+        } else {
+            if(buffer.size() < end + 1) { return {std::nullopt, buffer, unparsedBytes, {}}; }
+            if(buffer[end] != protocol::endMarker) {
+                skipOne();
+                continue;
+            }
         }
-        if(end == buffer.end() || *end != protocol::End_marker) {
-            return {std::nullopt, buffer, unparsed_bytes, {}};
-        }
+        ++end;   // the end marker
 
-        std::optional<catalog_id> id;
-        if(fmtStringType == detail::FmtStringType::cataloged_normal) {
-            auto const rangeSize = detail::parseFmtStringTypeIdentifier(buffer[1], fmtStringType);
-            auto const size      = parser.extractSize(std::next(buffer.begin(), 2),
-                                                      buffer.end(),
-                                                      detail::rangeSizeToTypeSize(*rangeSize));
-            id                   = static_cast<catalog_id>(size->first);
+        // second walk: the text
+        parser.render = true;
+        parser.stop   = detail::Parser::Stop::none;
+        phase         = ParseError::format;
+        detail::Input second{buffer.first(end), 3};
+        auto const    again    = parser.stringOf(id, second, isInline);
+        auto const    rendered = again && parts
+                                 ? parser.described(parts->fmtString, parts->descriptors, second)
+                                 : std::optional<std::string>{};
+        buffer                 = buffer.subspan(end);
+        if(!rendered) {
+            // a frame that is whole and checks out, but whose text fmt refused (reported): consumed, on to the next
+            continue;
         }
-
-        buffer = buffer.subspan(static_cast<std::size_t>(std::distance(buffer.begin(), end + 1)));
-        return {optionalStr->str, buffer, unparsed_bytes, id};
+        return {rendered,
+                buffer,
+                unparsedBytes,
+                id == protocol::inlineId ? std::optional<catalog_id>{}
+                                         : std::optional<catalog_id>{id}};
     }
-}
-
-template<typename ErrorMessageF>
-inline std::tuple<std::optional<std::string>,
-                  std::span<std::byte const>,
-                  std::size_t>
-parse(std::span<std::byte const>             buffer,
-      std::unordered_map<std::uint16_t,
-                         std::string> const& stringConstantsMap,
-      ErrorMessageF&&                        errorMessagef) {
-    auto result
-      = parseMessage(buffer, stringConstantsMap, std::forward<ErrorMessageF>(errorMessagef));
-    return {std::move(result.message), result.remaining, result.discarded};
 }
 }   // namespace remote_fmt

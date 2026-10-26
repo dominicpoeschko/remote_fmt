@@ -65,7 +65,7 @@ void failCase() {
 #elif REMOTE_FMT_FAIL_CASE == 10
     remote_fmt::checkFormatString<int>("{:%Q}"_sc);
 
-// Cases 11 to 13 need the full check; without it these arguments degrade to unchecked_arg and the
+// Cases 11 to 13 need the full check; without it these arguments degrade to UncheckedArg and the
 // strings are legitimately accepted. #error rather than silently testing nothing.
 #elif REMOTE_FMT_FAIL_CASE == 11
     #if REMOTE_FMT_FMT_CHECK_FULL

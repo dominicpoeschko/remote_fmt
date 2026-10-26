@@ -1,10 +1,19 @@
 cmake_minimum_required(VERSION 3.28)
-if(POLICY CMP0175)
-    cmake_policy(SET CMP0175 NEW)
-endif()
+cmake_policy(SET CMP0175 NEW)
 
 set(remote_fmt_dir
     ${CMAKE_CURRENT_LIST_DIR}
+    CACHE INTERNAL "")
+
+# The FMT_ASSERT of every cross TU (below) and of tests/CMakeLists.txt's fmt_patched_* checks: fmt's own reporter
+# fmt::assert_fail, which base.h declares before its first FMT_ASSERT - so it needs no header - but with the condition's
+# text and the file's name as assert() gives them. Only fmt's library object defines that function (format-inl.h), and
+# no firmware links it: the image's runtime defines it with assert()'s end. Live whatever NDEBUG says - no firmware
+# variant defines NDEBUG, so the assert() it replaces was live too. (A libc entry declared inside the macro does not
+# work: g++ drops the asm label of a block-scope declaration in a template.) A compile option, not a definition: CMake's
+# compile definitions take no function-style macros.
+set(remote_fmt_fmt_assert_option
+    "-DFMT_ASSERT(condition, message)=((condition) ? void() : ::fmt::assert_fail(__FILE_NAME__, __LINE__, #condition))"
     CACHE INTERNAL "")
 
 add_library(remote_fmt INTERFACE)
@@ -31,14 +40,20 @@ if(NOT CMAKE_CROSSCOMPILING)
         GIT_BRANCH
         master)
 
-    find_or_fetch_package(
-        nlohmann_json
-        GIT_REPOSITORY
-        https://github.com/nlohmann/json
-        GIT_TAG
-        v3.12.0
-        GIT_BRANCH
-        master)
+    # the catalog reader (catalog_helpers.hpp). The same version and patch as aglio's (glaze.patch is a copy of
+    # aglio's): in uc_log this fetch comes first and aglio then uses it, so both must agree.
+    if(NOT TARGET glaze_glaze AND NOT TARGET glaze::glaze)
+        find_or_fetch_package(
+            glaze
+            GIT_REPOSITORY
+            https://github.com/stephenberry/glaze.git
+            GIT_TAG
+            v9.0.0
+            GIT_BRANCH
+            main
+            PATCH_FILE
+            ${CMAKE_CURRENT_LIST_DIR}/glaze.patch)
+    endif()
 
     find_or_fetch_package(
         enchantum
@@ -64,18 +79,25 @@ else()
         PATCH_FILE
         ${remote_fmt_dir}/fmt.patch)
 
-    target_include_directories(remote_fmt INTERFACE ${fmt_uc_SOURCE_DIR}/include)
+    # SYSTEM: fmt's own warnings are not the firmware's (it was the last third-party include of remote_fmt without it)
+    target_include_directories(remote_fmt SYSTEM INTERFACE ${fmt_uc_SOURCE_DIR}/include)
     target_compile_definitions(remote_fmt INTERFACE FMT_STATIC_THOUSANDS_SEPARATOR=1)
 
     # fmt defaults this to on, which is wrong for a standard library without localization - every target reached through
     # this branch. Together with fmt.patch it makes fmt/chrono.h and fmt/std.h includable; neither alone is enough.
     target_compile_definitions(remote_fmt INTERFACE FMT_USE_LOCALE=0)
+    # And no Unicode width tables: a target's text is ASCII or passes through as bytes. Set here for every TU alike
+    # (string_constant/format.hpp defaults it to 0 too, but a TU may reach fmt through remote_fmt's own headers first).
+    target_compile_definitions(remote_fmt INTERFACE FMT_UNICODE=0)
 
     # Says fmt.patch is applied, so duration/optional/variant/expected get checked rather than skipped. Set here because
     # only this file knows about the patch.
     target_compile_definitions(remote_fmt INTERFACE REMOTE_FMT_FMT_CHECK_FULL=1)
 
-    target_compile_options(remote_fmt INTERFACE "-DFMT_ASSERT(condition, message)=assert(condition)")
+    # FMT_ASSERT without fmt's library object or any header (remote_fmt_fmt_assert_option, top of this file). One
+    # definition for the whole image, so all TUs agree; every header that reaches fmt compiles on its own with it
+    # (tests/CMakeLists.txt, fmt_patched_*), also against an fmt fetched without fmt.patch.
+    target_compile_options(remote_fmt INTERFACE "${remote_fmt_fmt_assert_option}")
 
     find_or_fetch_package(
         enchantum
@@ -88,6 +110,11 @@ else()
 
     # SYSTEM: enchantum triggers -Wundef under gcc
     target_include_directories(remote_fmt SYSTEM INTERFACE ${enchantum_SOURCE_DIR}/enchantum/include)
+
+    # The formatter sets of src/remote_fmt/config.hpp, for every TU of the image alike: this branch puts both headers on
+    # every consumer's path, so the build says so instead of each TU finding them. (The host keeps the __has_include
+    # defaults: its consumers are tests and tools, which all link remote_fmt::parser and so have both.)
+    target_compile_definitions(remote_fmt INTERFACE REMOTE_FMT_USE_ENCHANTUM=1 REMOTE_FMT_USE_STYLED=1)
 
 endif()
 
@@ -102,24 +129,27 @@ if(NOT CMAKE_CROSSCOMPILING)
     add_library(remote_fmt_parser INTERFACE)
 
     target_include_directories(remote_fmt_parser INTERFACE src)
-    target_link_libraries(remote_fmt_parser INTERFACE fmt::fmt enchantum::enchantum nlohmann_json::nlohmann_json)
+    target_link_libraries(remote_fmt_parser INTERFACE fmt::fmt enchantum::enchantum glaze::glaze)
 
     add_library(remote_fmt::parser ALIAS remote_fmt_parser)
 endif()
 
+# target_generate_string_constants(<target> [ID_KEY_STRIP <regex>]): the catalog of <target>'s string constants,
+# `<target>_string_constants.json`, written once after the link: tools/generate_string_constants.py finds the strings
+# before the link (the ids' .obj and `<target>_string_constants.prelink.json`), tools/extract_sites.py adds the call
+# sites and writes the catalog. ID_KEY_STRIP: a regex matched at the start of a string whose group 1 is left out of the
+# string's id hash (uc_log: a log line's line number); without it the whole string is the key.
 function(target_generate_string_constants targetname)
 
-    cmake_parse_arguments(PARSE_ARGV 1 PARSED_ARGS "" "STRING_CONSTANTS_MAP_FILE" "")
+    cmake_parse_arguments(PARSE_ARGV 1 PARSED_ARGS "" "ID_KEY_STRIP" "")
 
     if(PARSED_ARGS_UNPARSED_ARGUMENTS)
         message(FATAL_ERROR "unknown argument ${PARSED_ARGS_UNPARSED_ARGUMENTS}")
     endif()
 
-    if(NOT PARSED_ARGS_STRING_CONSTANTS_MAP_FILE)
-        set(PARSED_ARGS_STRING_CONSTANTS_MAP_FILE "${targetname}_string_constants.json")
-    endif()
-
     get_target_property(bin_dir ${targetname} BINARY_DIR)
+    set(prelink_json "${bin_dir}/${targetname}_string_constants.prelink.json")
+    set(catalog_json "${bin_dir}/${targetname}_string_constants.json")
 
     target_link_options(${targetname} PUBLIC ${bin_dir}/${targetname}_string_constants.obj)
 
@@ -156,6 +186,10 @@ function(target_generate_string_constants targetname)
         --objects
         $<TARGET_OBJECTS:${targetname}>)
 
+    if(PARSED_ARGS_ID_KEY_STRIP)
+        list(APPEND command --id-key-strip=${PARSED_ARGS_ID_KEY_STRIP})
+    endif()
+
     if(NOT "${flags}" STREQUAL "")
         list(APPEND command --flags=${flags})
     endif()
@@ -165,13 +199,16 @@ function(target_generate_string_constants targetname)
         PRE_LINK COMMAND_EXPAND_LISTS
         COMMAND ${command}
         # not the .obj: as an input of this link it would be a cycle for ninja
-        BYPRODUCTS ${bin_dir}/${targetname}_string_constants.cpp ${bin_dir}/${targetname}_string_constants.json
-        COMMENT "Extracting string constants for ${targetname}")
+        BYPRODUCTS ${bin_dir}/${targetname}_string_constants.cpp ${prelink_json}
+        COMMENT "Extracting string constants for ${targetname}"
+        # each argument as it is: an ID_KEY_STRIP regex holds quotes, brackets and parentheses
+        VERBATIM)
 
     set_property(
         TARGET ${targetname}
         APPEND
-        PROPERTY LINK_DEPENDS ${remote_fmt_dir}/tools/generate_string_constants.py)
+        PROPERTY LINK_DEPENDS ${remote_fmt_dir}/tools/generate_string_constants.py
+                 ${remote_fmt_dir}/tools/rf_symbols.py ${remote_fmt_dir}/tools/descriptor.py)
     set_property(
         TARGET ${targetname}
         APPEND
@@ -183,9 +220,9 @@ function(target_generate_string_constants targetname)
     set_property(
         TARGET ${targetname}
         APPEND
-        PROPERTY ADDITIONAL_CLEAN_FILES ${bin_dir}/${targetname}_string_constants.json)
+        PROPERTY ADDITIONAL_CLEAN_FILES ${prelink_json} ${catalog_json})
 
-    # after the link: the call sites (catalog.hpp REMOTE_FMT_SITE) into the json
+    # after the link: the strings and the call sites (catalog.hpp REMOTE_FMT_SITE) into the catalog
     if(NOT CMAKE_CROSSCOMPILING)
         target_link_options(${targetname} PRIVATE "-Wl,-T,${remote_fmt_dir}/cmake/remote_fmt_sites_host.ld")
         set_property(
@@ -193,9 +230,8 @@ function(target_generate_string_constants targetname)
             APPEND
             PROPERTY LINK_DEPENDS ${remote_fmt_dir}/cmake/remote_fmt_sites_host.ld)
     endif()
-    set(sites_json "${bin_dir}/${targetname}_string_constants.json")
     set(sites_command ${Python3_EXECUTABLE} ${remote_fmt_dir}/tools/extract_sites.py --elf $<TARGET_FILE:${targetname}>
-                      --json ${sites_json})
+                      --strings ${prelink_json} --json ${catalog_json})
     if(CMAKE_NM)
         list(APPEND sites_command --nm ${CMAKE_NM})
     endif()
@@ -203,10 +239,12 @@ function(target_generate_string_constants targetname)
         TARGET ${targetname}
         POST_BUILD
         COMMAND ${sites_command}
-        COMMENT "Adding the call sites of ${targetname} to its string catalog"
+        BYPRODUCTS ${catalog_json}
+        COMMENT "Writing the string catalog of ${targetname}"
         VERBATIM)
     set_property(
         TARGET ${targetname}
         APPEND
-        PROPERTY LINK_DEPENDS ${remote_fmt_dir}/tools/extract_sites.py)
+        PROPERTY LINK_DEPENDS ${remote_fmt_dir}/tools/extract_sites.py ${remote_fmt_dir}/tools/rf_symbols.py
+                 ${remote_fmt_dir}/tools/descriptor.py)
 endfunction()

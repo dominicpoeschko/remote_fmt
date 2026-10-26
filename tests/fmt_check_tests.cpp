@@ -50,7 +50,7 @@ static_assert(maps_to<char,
                       char>);
 
 // Types that change across the wire.
-static_assert(maps_to<int*,
+static_assert(maps_to<void*,
                       void const*>);
 static_assert(maps_to<void const*,
                       void const*>);
@@ -100,9 +100,9 @@ struct FixedMap {
     using value_type  = std::pair<K, V>;
     std::array<value_type, Capacity> data_{};
 
-    constexpr auto begin() const REMOTE_FMT_LIFETIMEBOUND { return data_.begin(); }
+    [[nodiscard]] constexpr auto begin() const REMOTE_FMT_LIFETIMEBOUND { return data_.begin(); }
 
-    constexpr auto end() const REMOTE_FMT_LIFETIMEBOUND { return data_.end(); }
+    [[nodiscard]] constexpr auto end() const REMOTE_FMT_LIFETIMEBOUND { return data_.end(); }
 };
 
 template<typename K, std::size_t Capacity>
@@ -111,9 +111,9 @@ struct FixedSet {
     using value_type = K;
     std::array<K, Capacity> data_{};
 
-    constexpr auto begin() const REMOTE_FMT_LIFETIMEBOUND { return data_.begin(); }
+    [[nodiscard]] constexpr auto begin() const REMOTE_FMT_LIFETIMEBOUND { return data_.begin(); }
 
-    constexpr auto end() const REMOTE_FMT_LIFETIMEBOUND { return data_.end(); }
+    [[nodiscard]] constexpr auto end() const REMOTE_FMT_LIFETIMEBOUND { return data_.end(); }
 };
 
 static_assert(maps_to<FixedMap<Color,
@@ -126,7 +126,7 @@ static_assert(maps_to<FixedSet<Color,
                       std::set<std::string_view>>);
 
 // The mapping must never demand more of a type than remote_fmt's own formatter does, or a type the
-// device can serialize becomes a build error. remote_fmt.hpp's is_map asks only for mapped_type and
+// device can serialize becomes a build error. traits.hpp's is_map asks only for mapped_type and
 // then serializes elements through formatter<range_value_t>, so neither of these may hard-error.
 template<typename V>
 struct MappedTypeOnly {   // is_map, but no key_type
@@ -134,18 +134,18 @@ struct MappedTypeOnly {   // is_map, but no key_type
     using value_type  = std::pair<int, V>;
     std::array<value_type, 2> data_{};
 
-    constexpr auto begin() const REMOTE_FMT_LIFETIMEBOUND { return data_.begin(); }
+    [[nodiscard]] constexpr auto begin() const REMOTE_FMT_LIFETIMEBOUND { return data_.begin(); }
 
-    constexpr auto end() const REMOTE_FMT_LIFETIMEBOUND { return data_.end(); }
+    [[nodiscard]] constexpr auto end() const REMOTE_FMT_LIFETIMEBOUND { return data_.end(); }
 };
 
 struct MapWithoutPairElement {   // is_map, but the element is not a pair
     using mapped_type = int;
     std::array<int, 2> data_{};
 
-    constexpr auto begin() const REMOTE_FMT_LIFETIMEBOUND { return data_.begin(); }
+    [[nodiscard]] constexpr auto begin() const REMOTE_FMT_LIFETIMEBOUND { return data_.begin(); }
 
-    constexpr auto end() const REMOTE_FMT_LIFETIMEBOUND { return data_.end(); }
+    [[nodiscard]] constexpr auto end() const REMOTE_FMT_LIFETIMEBOUND { return data_.end(); }
 };
 
 static_assert(maps_to<MappedTypeOnly<Color>,
@@ -206,20 +206,20 @@ static_assert(std::is_same_v<detail::checkable_t<OnlyRemoteFmt const&>,
     #if !REMOTE_FMT_FMT_CHECK_FULL
 // remote_fmt's own types whose fmt formatter is out of reach stay unchecked.
 static_assert(std::is_same_v<detail::checkable_t<std::optional<int>>,
-                             detail::unchecked_arg>);
+                             detail::UncheckedArg>);
 static_assert(std::is_same_v<detail::checkable_t<std::chrono::milliseconds>,
-                             detail::unchecked_arg>);
+                             detail::UncheckedArg>);
 // Inside a container only the element is, the container's own spec is still checked.
 static_assert(std::is_same_v<detail::checkable_t<std::vector<std::optional<int>>>,
-                             std::vector<detail::unchecked_arg>>);
+                             std::vector<detail::UncheckedArg>>);
 static_assert(std::is_same_v<detail::checkable_t<std::tuple<std::chrono::milliseconds,
                                                             int>>,
-                             std::tuple<detail::unchecked_arg,
+                             std::tuple<detail::UncheckedArg,
                                         int>>);
 static_assert(std::is_same_v<detail::checkable_t<std::map<int,
                                                           std::chrono::seconds>>,
                              std::map<int,
-                                      detail::unchecked_arg>>);
+                                      detail::UncheckedArg>>);
     #endif
 static_assert(std::is_same_v<detail::checkable_t<std::array<OnlyRemoteFmt,
                                                             2>>,
@@ -285,23 +285,33 @@ void acceptedFormatStrings() {
 #endif
 }
 
-// fmt considers every string here valid; these are remote_fmt's own rules.
-void argumentIdRules() {
-    using remote_fmt::detail::fieldsCarryNoArgumentId;
-    static_assert(fieldsCarryNoArgumentId("{}"));
-    static_assert(fieldsCarryNoArgumentId("{:>5}"));
-    static_assert(fieldsCarryNoArgumentId("{} {}"));
-    static_assert(fieldsCarryNoArgumentId("{{0}} literal"));
-    static_assert(fieldsCarryNoArgumentId("{::>4}"), "a range element spec is not an argument id");
-    static_assert(fieldsCarryNoArgumentId("{:%Q%q}"));
+// fmt considers every string here valid; these are remote_fmt's own rules (format_grammar.hpp).
+constexpr bool plainFields(std::string_view s) {
+    auto const shape = remote_fmt::detail::formatShape(s);
+    return shape.wellFormed && shape.plainFields;
+}
 
-    static_assert(!fieldsCarryNoArgumentId("{0}"));
-    static_assert(!fieldsCarryNoArgumentId("{1} {0}"));
-    static_assert(!fieldsCarryNoArgumentId("{name}"));
-    static_assert(!fieldsCarryNoArgumentId("{0:>5}"));
-    static_assert(!fieldsCarryNoArgumentId("{:{}}"), "dynamic width");
-    static_assert(!fieldsCarryNoArgumentId("{:.{}}"), "dynamic precision");
-    static_assert(!fieldsCarryNoArgumentId("{"));
+void argumentIdRules() {
+    static_assert(plainFields("{}"));
+    static_assert(plainFields("{:>5}"));
+    static_assert(plainFields("{} {}"));
+    static_assert(plainFields("{{0}} literal"));
+    static_assert(plainFields("{::>4}"), "a range element spec is not an argument id");
+    static_assert(plainFields("{:%Q%q}"));
+
+    static_assert(!plainFields("{0}"));
+    static_assert(!plainFields("{1} {0}"));
+    static_assert(!plainFields("{name}"));
+    static_assert(!plainFields("{0:>5}"));
+    static_assert(!plainFields("{:{}}"), "dynamic width");
+    static_assert(!plainFields("{:.{}}"), "dynamic precision");
+    static_assert(!plainFields("{"));
+
+    // the field count, nested fields counted as one: the target's "invalid replacement field count"
+    static_assert(remote_fmt::detail::formatShape("{} {{}} {:>3}").fields == 2);
+    static_assert(remote_fmt::detail::formatShape("{:{}}").fields == 1);
+    static_assert(!remote_fmt::detail::formatShape("{:}}x}").wellFormed,
+                  "no escape inside a field");
 }
 
 }   // namespace

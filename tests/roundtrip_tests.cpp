@@ -1,8 +1,18 @@
-// Round-trip tests: serialize with remote_fmt::Printer, parse with remote_fmt::parse and
+// Round-trip tests: serialize with remote_fmt::Printer, parse with remote_fmt::parseMessage and
 // compare against the fmt formatted result. Also covers parser robustness on malformed
 // buffers (garbage, truncation, resync).
+#include <cstddef>
+
+// The bytes the encoder puts into frame CRCs (printer.hpp REMOTE_FMT_CRC_HOOK): each byte of a frame exactly once.
+namespace crc_count { inline std::size_t bytes = 0; }
+
+#define REMOTE_FMT_CRC_HOOK(n) static_cast<void>(::crc_count::bytes += (n))
+
+#include "TestSupport.ipp"
+#include "remote_fmt/descriptor_grammar.hpp"
 #include "remote_fmt/parser.hpp"
 #include "remote_fmt/remote_fmt.hpp"
+#include "remote_fmt/wire.hpp"
 
 #include <array>
 #include <chrono>
@@ -11,6 +21,7 @@
 #include <cstdio>
 #include <expected>
 #include <map>
+#include <numbers>
 #include <optional>
 #include <set>
 #include <span>
@@ -32,111 +43,97 @@ using namespace std::literals;
 
 namespace {
 
-int failures = 0;
-
-#define CHECK(cond, msg)                                        \
-    do {                                                        \
-        if(!(cond)) {                                           \
-            std::printf("FAIL: %s (line %d)\n", msg, __LINE__); \
-            ++failures;                                         \
-        }                                                       \
-    } while(0)
-
-struct VectorBackend {
-    std::vector<std::byte> memory;
-
-    void write(std::span<std::byte const> data) {
-        memory.insert(memory.end(), data.begin(), data.end());
-    }
-};
-
-// Leaked on purpose: avoids the global-constructor and exit-time-destructor warnings.
-std::unordered_map<std::uint16_t,
-                   std::string> const&
-emptyCatalog() {
-    static auto const& catalog = *new std::unordered_map<std::uint16_t, std::string>{};
-    return catalog;
-}
+using remote_fmt::test::emptyCatalog;
+using remote_fmt::test::enumValue;
+using remote_fmt::test::failures;
+using remote_fmt::test::VectorBackend;
 
 template<typename... Args>
 std::vector<std::byte> serialize(auto fmtString,
                                  Args&&... args) {
     remote_fmt::Printer<VectorBackend> printer{};
     printer.print(fmtString, std::forward<Args>(args)...);
-    return printer.get_com_backend().memory;
+    return printer.getComBackend().memory;
 }
 
-// Assembles a message the Printer cannot produce: start marker, a normal fmt-string header, the
-// format string, one 4-byte signed argument, end marker. Needed for specs the serializer rejects at
-// compile time but a hostile stream could still send.
-std::vector<std::byte> rawFrame(std::string_view fmtString,
-                                std::int32_t     value) {
-    std::vector<std::byte> buffer;
-    buffer.push_back(remote_fmt::protocol::Start_marker);
-    buffer.push_back(
-      remote_fmt::detail::fmtStringTypeIdentifier<remote_fmt::detail::FmtStringType::normal>(
-        remote_fmt::detail::RangeSize::_1));
-    buffer.push_back(static_cast<std::byte>(fmtString.size()));
-    for(char const character : fmtString) { buffer.push_back(static_cast<std::byte>(character)); }
-    buffer.push_back(
-      remote_fmt::detail::trivialTypeIdentifier<remote_fmt::detail::TrivialType::signed_,
-                                                remote_fmt::detail::TypeSize::_4>());
-    auto const unsignedValue = static_cast<std::uint32_t>(value);
-    for(unsigned shift = 0; shift < 32U; shift += 8U) {
-        buffer.push_back(static_cast<std::byte>((unsignedValue >> shift) & 0xFFU));
+void appendVarint(std::vector<std::byte>& out,
+                  std::uint64_t           value) {
+    while(value >= 0x80U) {
+        out.push_back(static_cast<std::byte>((value & 0x7FU) | 0x80U));
+        value >>= 7U;
     }
-    buffer.push_back(remote_fmt::protocol::End_marker);
+    out.push_back(static_cast<std::byte>(value));
+}
+
+// An inline string reference as the Printer writes one without a catalog: the inline id, the length, the bytes.
+void appendInlineString(std::vector<std::byte>& out,
+                        std::string_view        text) {
+    out.push_back(std::byte{0xFF});
+    out.push_back(std::byte{0xFF});
+    appendVarint(out, text.size());
+    for(char const character : text) { out.push_back(static_cast<std::byte>(character)); }
+}
+
+// A whole inline frame around `described` (format string, 0x1e, descriptors) and the values' bytes, with the CRC when
+// this build checks its frames.
+std::vector<std::byte> inlineFrame(std::string_view              described,
+                                   std::vector<std::byte> const& values) {
+    std::vector<std::byte> buffer;
+    buffer.push_back(REMOTE_FMT_FRAME_CHECK ? remote_fmt::protocol::checkedStartMarker
+                                            : remote_fmt::protocol::startMarker);
+    appendInlineString(buffer, described);
+    buffer.insert(buffer.end(), values.begin(), values.end());
+    if constexpr(REMOTE_FMT_FRAME_CHECK != 0) {
+        buffer.push_back(static_cast<std::byte>(remote_fmt::protocol::crcFinal(
+          remote_fmt::protocol::crcOver(remote_fmt::protocol::crcInit, std::span{buffer}))));
+    }
+    buffer.push_back(remote_fmt::protocol::endMarker);
     return buffer;
 }
 
-// A frame whose single argument is a sub format string of pure literal text, for specs that a
+std::string describedText(std::string_view fmtString,
+                          std::string_view descriptors) {
+    std::string out{fmtString};
+    out += '\x1e';
+    out += descriptors;
+    return out;
+}
+
+// Assembles a message the Printer cannot produce: an inline format string with one 4-byte signed argument. Needed for
+// specs the serializer rejects at compile time but a hostile stream could still send.
+std::vector<std::byte> rawFrame(std::string_view fmtString,
+                                std::int32_t     value) {
+    std::vector<std::byte> values;
+    auto const             zigzag
+      = (static_cast<std::uint32_t>(value) << 1U) ^ static_cast<std::uint32_t>(value >> 31);
+    appendVarint(values, zigzag);
+    return inlineFrame(describedText(fmtString, "i4"), values);
+}
+
+// A frame whose single argument is a sub format string of pure literal text (a `*` argument), for specs that a
 // rendered sub format string cannot take.
 std::vector<std::byte> rawSubFmtStringFrame(std::string_view fmtString,
                                             std::string_view subFmtString) {
-    std::vector<std::byte> buffer;
-    buffer.push_back(remote_fmt::protocol::Start_marker);
-    buffer.push_back(
-      remote_fmt::detail::fmtStringTypeIdentifier<remote_fmt::detail::FmtStringType::normal>(
-        remote_fmt::detail::RangeSize::_1));
-    buffer.push_back(static_cast<std::byte>(fmtString.size()));
-    for(char const character : fmtString) { buffer.push_back(static_cast<std::byte>(character)); }
-    buffer.push_back(
-      remote_fmt::detail::fmtStringTypeIdentifier<remote_fmt::detail::FmtStringType::sub>(
-        remote_fmt::detail::RangeSize::_1));
-    buffer.push_back(static_cast<std::byte>(subFmtString.size()));
-    for(char const character : subFmtString) {
-        buffer.push_back(static_cast<std::byte>(character));
-    }
-    buffer.push_back(remote_fmt::protocol::End_marker);
-    return buffer;
+    std::vector<std::byte> values;
+    appendInlineString(values, describedText(subFmtString, ""));
+    return inlineFrame(describedText(fmtString, "*"), values);
 }
 
 // Same, with an inline string argument, for specs that are wrong for a string.
 std::vector<std::byte> rawStringFrame(std::string_view fmtString,
                                       std::string_view value) {
-    std::vector<std::byte> buffer;
-    buffer.push_back(remote_fmt::protocol::Start_marker);
-    buffer.push_back(
-      remote_fmt::detail::fmtStringTypeIdentifier<remote_fmt::detail::FmtStringType::normal>(
-        remote_fmt::detail::RangeSize::_1));
-    buffer.push_back(static_cast<std::byte>(fmtString.size()));
-    for(char const character : fmtString) { buffer.push_back(static_cast<std::byte>(character)); }
-    buffer.push_back(
-      remote_fmt::detail::rangeTypeIdentifier<remote_fmt::detail::RangeType::string,
-                                              remote_fmt::detail::RangeLayout::compact>(
-        remote_fmt::detail::RangeSize::_1));
-    buffer.push_back(static_cast<std::byte>(value.size()));
-    for(char const character : value) { buffer.push_back(static_cast<std::byte>(character)); }
-    buffer.push_back(remote_fmt::protocol::End_marker);
-    return buffer;
+    std::vector<std::byte> values;
+    appendVarint(values, value.size());
+    for(char const character : value) { values.push_back(static_cast<std::byte>(character)); }
+    return inlineFrame(describedText(fmtString, "s"), values);
 }
 
 template<typename... Args>
 std::optional<std::string> roundTrip(auto fmtString,
                                      Args&&... args) {
     auto const buffer = serialize(fmtString, std::forward<Args>(args)...);
-    auto const [message, remaining, discarded]
-      = remote_fmt::parse(std::span{buffer}, emptyCatalog(), [](std::string_view error) {
+    auto const [message, remaining, discarded, catalogId]
+      = remote_fmt::parseMessage(std::span{buffer}, emptyCatalog(), [](std::string_view error) {
             std::printf("parser error: %.*s\n", static_cast<int>(error.size()), error.data());
         });
     if(!remaining.empty() || discarded != 0) { return std::nullopt; }
@@ -224,7 +221,7 @@ void stringRoundTrips() {
     CHECK_RT("view", "{}"_sc, "view"sv);
     CHECK_RT("string", "{}"_sc, std::string{"string"});
     CHECK_RT("red", "{}"_sc, Color::red);
-    CHECK_RT("42", "{}"_sc, static_cast<Color>(42));
+    CHECK_RT("42", "{}"_sc, enumValue<Color>(42));
 }
 
 void rangeRoundTrips() {
@@ -306,8 +303,8 @@ void timeRoundTrips() {
     {
         bool       errorReported = false;
         auto const buffer        = serialize("{:%j}"_sc, std::chrono::duration<double>{5.5e43});
-        auto const [message, remaining, discarded]
-          = remote_fmt::parse(std::span{buffer}, emptyCatalog(), [&](std::string_view) {
+        auto const [message, remaining, discarded, catalogId]
+          = remote_fmt::parseMessage(std::span{buffer}, emptyCatalog(), [&](std::string_view) {
                 errorReported = true;
             });
         CHECK(!message, "huge duration with calendar spec fails");
@@ -365,8 +362,8 @@ void replacementFieldNumberLimit() {
     auto rejects = [](auto fmtString, auto... args) {
         bool       errorReported = false;
         auto const buffer        = serialize(fmtString, args...);
-        auto const [message, remaining, discarded]
-          = remote_fmt::parse(std::span{buffer}, emptyCatalog(), [&](std::string_view) {
+        auto const [message, remaining, discarded, catalogId]
+          = remote_fmt::parseMessage(std::span{buffer}, emptyCatalog(), [&](std::string_view) {
                 errorReported = true;
             });
         return !message && errorReported;
@@ -388,8 +385,8 @@ void replacementFieldNumberLimit() {
         auto const rejectsRaw = [](std::string_view fmtString) {
             auto const buffer        = rawFrame(fmtString, 0x7FFFFFFF);
             bool       errorReported = false;
-            auto const [message, remaining, discarded]
-              = remote_fmt::parse(std::span{buffer}, emptyCatalog(), [&](std::string_view) {
+            auto const [message, remaining, discarded, catalogId]
+              = remote_fmt::parseMessage(std::span{buffer}, emptyCatalog(), [&](std::string_view) {
                     errorReported = true;
                 });
             return !message && errorReported;
@@ -397,13 +394,13 @@ void replacementFieldNumberLimit() {
 
         // Positive control first: the hand-built frame really is a frame the parser accepts.
         auto const control = rawFrame("v={}", 7);
-        auto const [controlMessage, controlRemaining, controlDiscarded]
-          = remote_fmt::parse(std::span{control}, emptyCatalog(), [](std::string_view) {});
+        auto const [controlMessage, controlRemaining, controlDiscarded, controlId]
+          = remote_fmt::parseMessage(std::span{control}, emptyCatalog(), [](std::string_view) {});
         CHECK(controlMessage.has_value() && *controlMessage == "v=7", "hand-built frame parses");
         CHECK(controlRemaining.empty() && controlDiscarded == 0, "hand-built frame consumed whole");
 
         // The shape the fuzzer actually produced. Trailing text after the inner brace keeps the
-        // outer braces balanced, so this gets past checkReplacementFieldCount and reaches the
+        // outer braces balanced, so this gets past the grammar's pre-check and reaches the
         // nested-brace rule, which reports it.
         CHECK(rejectsRaw("{0:{0}Q%q0r}"), "self-referential dynamic width reported");
 
@@ -478,7 +475,7 @@ void fmtParityFloats() {
                               5e-324,
                               1.7976931348623157e308,
                               2.2250738585072014e-308,
-                              3.141592653589793})
+                              std::numbers::pi})
     {
         CHECK_PARITY("{}", value);
         CHECK_PARITY("{:e}", value);
@@ -712,7 +709,7 @@ void fmtParityStyled() {
 // std::variant is the one case that needed a wire change to make possible: it used to be serialized
 // transparently, with std::visit handing the active alternative straight to its own formatter, so no
 // marker distinguished a variant from a bare value and the parser could not have reproduced the
-// wrapper from the bytes alone. It now carries an ExtendedTypeIdentifier::variant marker.
+// wrapper from the bytes alone. It now has a descriptor of its own (`V`: the index byte, then the alternative).
 void fmtParityWrappers() {
     CHECK_PARITY("{}", std::optional<int>{42});
     CHECK_PARITY("{}", std::optional<int>{});
@@ -826,7 +823,8 @@ void optionalInsideWrapperQuirk() {
       std::variant<int, std::optional<std::string>>{std::optional<std::string>{"s"}});
 }
 
-enum UnscopedStatus { active, idle };
+// a fixed underlying type: 7 below is then a value of the type (without one the range ends at 1, and the cast is UB)
+enum UnscopedStatus : int { active, idle };
 
 // Enums are the one place the protocol does more than fmt rather than differently. fmt refuses both
 // a scoped and an unscoped enum outright - it is a hard compile error, not an integer fallback - so
@@ -846,8 +844,8 @@ void enumFormatting() {
     CHECK_RT("idle", "{}"_sc, idle);
 
     // A value with no enumerator has no name to reflect, so it falls back to the number.
-    CHECK_RT("42", "{}"_sc, static_cast<Color>(42));
-    CHECK_RT("7", "{}"_sc, static_cast<UnscopedStatus>(7));
+    CHECK_RT("42", "{}"_sc, enumValue<Color>(42));
+    CHECK_RT("7", "{}"_sc, enumValue<UnscopedStatus>(7));
 
     // The name travels as a string, so nested in a container it picks up the same debug quoting any
     // other string element gets.
@@ -865,7 +863,11 @@ void enumFormatting() {
 
 // Bitflags. The opt-in is these five operators - enchantum/common.hpp detects a bitflag enum by
 // looking for them, there is no trait to specialize.
-enum struct Perm : std::uint8_t { read = 1 << 0, write = 1 << 1, exec = 1 << 2 };
+enum struct [[clang::flag_enum]] Perm : std::uint8_t {
+    read  = 1 << 0,
+    write = 1 << 1,
+    exec  = 1 << 2
+};
 
 constexpr Perm operator|(Perm a,
                          Perm b) {
@@ -890,7 +892,7 @@ constexpr Perm operator&(Perm a,
 }
 
 // Same, with a named zero so has_zero_flag is true.
-enum struct Mode : std::uint8_t { none = 0, sync = 1 << 0, async = 1 << 1 };
+enum struct [[clang::flag_enum]] Mode : std::uint8_t { none = 0, sync = 1 << 0, async = 1 << 1 };
 
 constexpr Mode operator|(Mode a,
                          Mode b) {
@@ -914,6 +916,36 @@ constexpr Mode operator&(Mode a,
     return a = a & b;
 }
 
+// A 64-bit bitflag enum with its top bit: the descriptor spells that enumerator 9223372036854775808, past INT64_MAX.
+enum struct [[clang::flag_enum]] Wide : std::uint64_t { lo = 1, hi = std::uint64_t{1} << 63U };
+
+constexpr Wide operator|(Wide a,
+                         Wide b) {
+    return Wide(std::uint64_t(a) | std::uint64_t(b));
+}
+
+constexpr Wide operator&(Wide a,
+                         Wide b) {
+    return Wide(std::uint64_t(a) & std::uint64_t(b));
+}
+
+[[maybe_unused]] constexpr Wide operator~(Wide a) { return Wide(~std::uint64_t(a)); }
+
+[[maybe_unused]] constexpr Wide& operator|=(Wide& a,
+                                            Wide  b) {
+    return a = a | b;
+}
+
+[[maybe_unused]] constexpr Wide& operator&=(Wide& a,
+                                            Wide  b) {
+    return a = a & b;
+}
+
+// A signed enum with a negative enumerator: '-' in the descriptor.
+enum struct Level : std::int8_t { low = -100, zero = 0, high = 100 };
+
+static_assert(enchantum::is_bitflag<Wide>,
+              "Wide must be detected as a bitflag enum");
 static_assert(enchantum::is_bitflag<Perm>,
               "Perm must be detected as a bitflag enum");
 static_assert(enchantum::is_bitflag<Mode>,
@@ -936,11 +968,11 @@ void bitflagFormatting() {
     CHECK_RT("read|exec", "{}"_sc, Perm::exec | Perm::read);
 
     // No zero enumerator, so 0 has no name and falls back to the number.
-    CHECK_RT("0", "{}"_sc, Perm{});
+    CHECK_RT("0", "{}"_sc, enumValue<Perm>(0));
 
     // A bit no enumerator covers means the names are not the whole value - printing "read" would
     // silently drop the 0x8, so the whole thing goes out as an integer.
-    CHECK_RT("9", "{}"_sc, static_cast<Perm>(0x9));
+    CHECK_RT("9", "{}"_sc, enumValue<Perm>(0x9));
 
     // With a named zero, 0 gets its name and travels as a plain enumerator, no sequence.
     CHECK_RT("none", "{}"_sc, Mode::none);
@@ -959,18 +991,38 @@ void bitflagFormatting() {
     CHECK_RT("(\"read|exec\", 1)", "{}"_sc, std::tuple{Perm::read | Perm::exec, 1});
 }
 
+// Enumerator values as the descriptor spells them: an unsigned one in full, a signed one with '-' - read as the 64
+// bits of the value either way, so both name the value on the host.
+void enumeratorValues() {
+    CHECK_RT("hi", "{}"_sc, Wide::hi);
+    CHECK_RT("lo|hi", "{}"_sc, Wide::lo | Wide::hi);
+    CHECK_RT("2", "{}"_sc, enumValue<Wide>(2));
+    CHECK_RT("low", "{}"_sc, Level::low);
+    CHECK_RT("zero high", "{} {}"_sc, Level::zero, Level::high);
+    CHECK_RT("-5", "{}"_sc, enumValue<Level>(-5));
+
+    // the grammar alone, at the edges of both ranges (the same strings as test_descriptor_split.py's)
+    auto const skips
+      = [](std::string_view d) { return remote_fmt::detail::grammar::skip(d) && d.empty(); };
+    CHECK(skips("Gu82:1,2:lo9223372036854775808,2:hi"), "a u64 bitflag's top bit");
+    CHECK(skips("Eu81:18446744073709551615,3:max"), "the largest unsigned value");
+    CHECK(!skips("Eu81:18446744073709551616,3:max"), "past 64 bits: malformed");
+    CHECK(skips("Ei81:-9223372036854775808,3:min"), "the smallest signed value");
+    CHECK(!skips("Ei81:-9223372036854775809,3:min"), "below INT64_MIN: malformed");
+}
+
 void multipleMessages() {
     auto       first  = serialize("first {}"_sc, 1);
     auto const second = serialize("second {}"_sc, 2);
     first.insert(first.end(), second.begin(), second.end());
 
-    auto const [message1, remaining1, discarded1]
-      = remote_fmt::parse(std::span{first}, emptyCatalog(), [](std::string_view) {});
+    auto const [message1, remaining1, discarded1, catalogId1]
+      = remote_fmt::parseMessage(std::span{first}, emptyCatalog(), [](std::string_view) {});
     CHECK(message1.has_value() && *message1 == "first 1", "first message parses");
     CHECK(discarded1 == 0, "no bytes discarded before first message");
 
-    auto const [message2, remaining2, discarded2]
-      = remote_fmt::parse(remaining1, emptyCatalog(), [](std::string_view) {});
+    auto const [message2, remaining2, discarded2, catalogId2]
+      = remote_fmt::parseMessage(remaining1, emptyCatalog(), [](std::string_view) {});
     CHECK(message2.has_value() && *message2 == "second 2", "second message parses");
     CHECK(remaining2.empty(), "buffer fully consumed");
     CHECK(discarded2 == 0, "no bytes discarded before second message");
@@ -978,16 +1030,17 @@ void multipleMessages() {
 
 void malformedInput() {
     {
-        auto const [message, remaining, discarded] = remote_fmt::parse(std::span<std::byte const>{},
-                                                                       emptyCatalog(),
-                                                                       [](std::string_view) {});
+        auto const [message, remaining, discarded, catalogId]
+          = remote_fmt::parseMessage(std::span<std::byte const>{},
+                                     emptyCatalog(),
+                                     [](std::string_view) {});
         CHECK(!message && remaining.empty() && discarded == 0, "empty buffer");
     }
 
     {
         std::vector<std::byte> const garbage{std::byte{0x00}, std::byte{0x01}, std::byte{0x02}};
-        auto const [message, remaining, discarded]
-          = remote_fmt::parse(std::span{garbage}, emptyCatalog(), [](std::string_view) {});
+        auto const [message, remaining, discarded, catalogId]
+          = remote_fmt::parseMessage(std::span{garbage}, emptyCatalog(), [](std::string_view) {});
         CHECK(!message, "garbage produces no message");
         CHECK(discarded == 3, "garbage fully discarded");
         CHECK(remaining.empty(), "garbage buffer consumed");
@@ -996,8 +1049,8 @@ void malformedInput() {
     {
         auto buffer = serialize("Test {}"_sc, 123);
         buffer.insert(buffer.begin(), {std::byte{0x00}, std::byte{0x13}});
-        auto const [message, remaining, discarded]
-          = remote_fmt::parse(std::span{buffer}, emptyCatalog(), [](std::string_view) {});
+        auto const [message, remaining, discarded, catalogId]
+          = remote_fmt::parseMessage(std::span{buffer}, emptyCatalog(), [](std::string_view) {});
         CHECK(message.has_value() && *message == "Test 123", "message after garbage parses");
         CHECK(discarded == 2, "garbage prefix discarded");
         CHECK(remaining.empty(), "buffer fully consumed");
@@ -1006,8 +1059,8 @@ void malformedInput() {
     {
         auto truncated = serialize("Test {}"_sc, 123);
         truncated.pop_back();
-        auto const [message, remaining, discarded]
-          = remote_fmt::parse(std::span{truncated}, emptyCatalog(), [](std::string_view) {});
+        auto const [message, remaining, discarded, catalogId]
+          = remote_fmt::parseMessage(std::span{truncated}, emptyCatalog(), [](std::string_view) {});
         CHECK(!message, "missing end marker fails");
         CHECK(remaining.size() == truncated.size(), "incomplete message kept for retry");
         CHECK(discarded == 0, "incomplete message not discarded");
@@ -1017,8 +1070,8 @@ void malformedInput() {
         // Drop one payload byte so the end marker is consumed as argument data.
         auto corrupted = serialize("{}"_sc, 0x11223344);
         corrupted.erase(std::prev(corrupted.end(), 2));
-        auto const [message, remaining, discarded]
-          = remote_fmt::parse(std::span{corrupted}, emptyCatalog(), [](std::string_view) {});
+        auto const [message, remaining, discarded, catalogId]
+          = remote_fmt::parseMessage(std::span{corrupted}, emptyCatalog(), [](std::string_view) {});
         CHECK(!message, "corrupted payload fails");
     }
 
@@ -1026,13 +1079,13 @@ void malformedInput() {
         // Streaming: an incomplete prefix parses to nothing, the full buffer succeeds.
         auto const full   = serialize("Test {}"_sc, 123);
         auto const prefix = std::span{full}.subspan(0, full.size() / 2);
-        auto const [message, remaining, discarded]
-          = remote_fmt::parse(prefix, emptyCatalog(), [](std::string_view) {});
+        auto const [message, remaining, discarded, catalogId]
+          = remote_fmt::parseMessage(prefix, emptyCatalog(), [](std::string_view) {});
         CHECK(!message, "incomplete prefix produces no message");
         CHECK(remaining.size() == prefix.size(), "incomplete prefix kept for retry");
 
-        auto const [fullMessage, fullRemaining, fullDiscarded]
-          = remote_fmt::parse(std::span{full}, emptyCatalog(), [](std::string_view) {});
+        auto const [fullMessage, fullRemaining, fullDiscarded, fullId]
+          = remote_fmt::parseMessage(std::span{full}, emptyCatalog(), [](std::string_view) {});
         CHECK(fullMessage.has_value() && *fullMessage == "Test 123", "full buffer parses");
     }
 
@@ -1041,8 +1094,8 @@ void malformedInput() {
         // serializer no longer compiles "{:d}" for a string - the host still sees untrusted bytes.
         bool       errorReported = false;
         auto const buffer        = rawStringFrame("{:d}", "not a number");
-        auto const [message, remaining, discarded]
-          = remote_fmt::parse(std::span{buffer}, emptyCatalog(), [&](std::string_view) {
+        auto const [message, remaining, discarded, catalogId]
+          = remote_fmt::parseMessage(std::span{buffer}, emptyCatalog(), [&](std::string_view) {
                 errorReported = true;
             });
         CHECK(!message, "bad format spec fails");
@@ -1050,44 +1103,30 @@ void malformedInput() {
     }
 }
 
-// A frame whose argument is "depth" one-element ranges wrapped around a u8. A level costs two
-// bytes on the wire and a whole parse frame on the stack, and the depth is the device's choice.
-template<remote_fmt::detail::RangeType rangeType>
-std::vector<std::byte> nestedFrame(std::size_t depth) {
-    std::vector<std::byte> buffer;
-    buffer.push_back(remote_fmt::protocol::Start_marker);
-    buffer.push_back(
-      remote_fmt::detail::fmtStringTypeIdentifier<remote_fmt::detail::FmtStringType::normal>(
-        remote_fmt::detail::RangeSize::_1));
-    buffer.push_back(static_cast<std::byte>(2));
-    buffer.push_back(static_cast<std::byte>('{'));
-    buffer.push_back(static_cast<std::byte>('}'));
-
-    // on_ti_each: each element carries its own type identifier, so a level can hold another range.
+// A frame whose argument is "depth" one-element ranges (or tuples) wrapped around a u8. A level costs a byte of
+// descriptor and a whole parse frame on the stack, and an inline descriptor is the stream's choice.
+std::vector<std::byte> nestedFrame(char        kind,
+                                   std::size_t depth) {
+    std::string            descriptor;
+    std::vector<std::byte> values;
     for(std::size_t level = 0; level < depth; ++level) {
-        buffer.push_back(
-          remote_fmt::detail::rangeTypeIdentifier<rangeType,
-                                                  remote_fmt::detail::RangeLayout::on_ti_each>(
-            remote_fmt::detail::RangeSize::_1));
-        buffer.push_back(static_cast<std::byte>(1));
+        descriptor += kind;
+        if(kind == 'L') { values.push_back(std::byte{1}); }
     }
-
-    buffer.push_back(
-      remote_fmt::detail::trivialTypeIdentifier<remote_fmt::detail::TrivialType::unsigned_,
-                                                remote_fmt::detail::TypeSize::_1>());
-    buffer.push_back(static_cast<std::byte>(42));
-    buffer.push_back(remote_fmt::protocol::End_marker);
-    return buffer;
+    descriptor += "u1";
+    if(kind == '(') { descriptor.append(depth, ')'); }
+    values.push_back(std::byte{42});
+    return inlineFrame(describedText("{}", descriptor), values);
 }
 
 // Asserts the rejection, not the crash: a test that overflowed the stack would take the binary
 // down with it and report nothing.
 void nestingDepthLimit() {
-    constexpr auto Limit = remote_fmt::detail::Parser::Max_nesting_depth;
+    constexpr auto Limit = remote_fmt::detail::Parser::maxNestingDepth;
 
     auto const parseNested = [](auto const& buffer, std::string& error) {
-        auto const [message, remaining, discarded]
-          = remote_fmt::parse(std::span{buffer}, emptyCatalog(), [&](std::string_view e) {
+        auto const [message, remaining, discarded, catalogId]
+          = remote_fmt::parseMessage(std::span{buffer}, emptyCatalog(), [&](std::string_view e) {
                 error = e;
             });
         return message;
@@ -1096,22 +1135,19 @@ void nestingDepthLimit() {
     // Shallow nesting is ordinary data and has to keep working.
     {
         std::string error;
-        auto const  message
-          = parseNested(nestedFrame<remote_fmt::detail::RangeType::list>(4), error);
+        auto const  message = parseNested(nestedFrame('L', 4), error);
         CHECK(message.has_value() && *message == "[[[[42]]]]", "4-deep list renders");
     }
 
     // The boundary itself, from both sides.
     {
         std::string error;
-        auto const  message
-          = parseNested(nestedFrame<remote_fmt::detail::RangeType::list>(Limit - 1), error);
+        auto const  message = parseNested(nestedFrame('L', Limit - 1), error);
         CHECK(message.has_value(), "nesting one below the limit still parses");
     }
     {
         std::string error;
-        auto const  message
-          = parseNested(nestedFrame<remote_fmt::detail::RangeType::list>(Limit), error);
+        auto const  message = parseNested(nestedFrame('L', Limit), error);
         CHECK(!message, "nesting at the limit is refused");
         CHECK(!error.empty(), "nesting at the limit reports an error");
     }
@@ -1121,15 +1157,13 @@ void nestingDepthLimit() {
     for(std::size_t depth : {std::size_t{8000}, std::size_t{20000}}) {
         {
             std::string error;
-            auto const  message
-              = parseNested(nestedFrame<remote_fmt::detail::RangeType::list>(depth), error);
+            auto const  message = parseNested(nestedFrame('L', depth), error);
             CHECK(!message, "deeply nested list refused");
         }
         {
-            // parseTuple recurses through parseFromTypeId just as parseList does.
+            // a tuple recurses through value() just as a list does
             std::string error;
-            auto const  message
-              = parseNested(nestedFrame<remote_fmt::detail::RangeType::tuple>(depth), error);
+            auto const  message = parseNested(nestedFrame('(', depth), error);
             CHECK(!message, "deeply nested tuple refused");
         }
     }
@@ -1138,14 +1172,14 @@ void nestingDepthLimit() {
     CHECK_RT("Test 123", "Test {}"_sc, 123);
 }
 
-// Format strings checkReplacementFieldCount accepted but the parser's own scan could not consume.
-// The scan asserted on exactly what the validator was supposed to guarantee, so these aborted an
+// Format strings the old target check accepted but the parser's own scan could not consume (two
+// scanners then, one now: format_grammar.hpp). The scan asserted on exactly what the validator was supposed to guarantee, so these aborted an
 // assert-enabled build and sailed through a release one. Rejection is the contract, in every build.
 void malformedFormatString() {
     auto const refuses = [](std::string_view fmtString) {
         auto const buffer = rawFrame(fmtString, 42);
-        auto const [message, remaining, discarded]
-          = remote_fmt::parse(std::span{buffer}, emptyCatalog(), [](std::string_view) {});
+        auto const [message, remaining, discarded, catalogId]
+          = remote_fmt::parseMessage(std::span{buffer}, emptyCatalog(), [](std::string_view) {});
         return !message;
     };
 
@@ -1174,46 +1208,53 @@ void malformedFormatString() {
     CHECK_RT("Test 123", "Test {}"_sc, 123);
 }
 
-// The scan that used to assert, tested directly rather than through parse(). Nothing on the wire
-// reaches these branches today - checkReplacementFieldCount refuses all of it first, which is the
-// point of the root fix - but the two are separate implementations of one grammar, and this is the
-// layer that decides whether the next divergence between them is a rejected frame or an abort.
+// The scanner itself (format_grammar.hpp), tested directly rather than through parseMessage(): nothing on
+// the wire reaches its error branches past the pre-check, but the parser's walk does not trust that
+// check, and this is the layer that decides whether a bad string is a rejected frame or an abort.
 void replacementFieldScanRejections() {
-    remote_fmt::detail::Parser parser{[](std::string_view) {}};
-
-    auto const scan = [&parser](std::string_view fmtString) {
-        std::string      out;
-        std::string_view rest = fmtString;
-        return parser.getNextReplacementFieldFromFmtStringAndAppendStrings(out, rest);
-    };
+    using remote_fmt::detail::nextField;
+    using remote_fmt::detail::ScanError;
 
     // A trailing brace of either kind: neither an escape pair nor a field that can close.
-    CHECK(scan("{").malformed, "trailing '{' reported malformed");
-    CHECK(scan("}").malformed, "trailing '}' reported malformed");
-    CHECK(scan("abc{").malformed, "trailing '{' after text reported malformed");
+    CHECK(nextField("{").malformed(), "trailing '{' reported malformed");
+    CHECK(nextField("}").malformed(), "trailing '}' reported malformed");
+    CHECK(nextField("abc{").malformed(), "trailing '{' after text reported malformed");
 
     // An unescaped '}' with no field open closes nothing.
-    CHECK(scan("}x").malformed, "unopened '}' reported malformed");
+    CHECK(nextField("}x").error == ScanError::loneClose, "unopened '}' reported malformed");
 
     // A field that never closes: the search for '}' runs off the end.
-    CHECK(scan("{:>10").malformed, "unclosed field reported malformed");
+    CHECK(nextField("{:>10").error == ScanError::unclosed, "unclosed field reported malformed");
+
+    // A nested brace is one field, reported as such.
+    {
+        auto const field = nextField("{:{}}x");
+        CHECK(field.error == ScanError::nested && field.field == "{:{}}" && field.rest == "x",
+              "dynamic width is one nested field");
+    }
 
     // The well-formed cases still behave, and running out of fields is not "malformed".
     {
-        auto const field = scan("{}");
-        CHECK(!field.malformed && field.field && *field.field == "{}", "'{}' yields one field");
+        auto const field = nextField("{}");
+        CHECK(field.error == ScanError::none && field.field == "{}", "'{}' yields one field");
     }
     {
-        auto const field = scan("a {:>4} b");
-        CHECK(!field.malformed && field.field && *field.field == "{:>4}", "spec field returned");
+        auto const field = nextField("a {:>4} b");
+        CHECK(field.error == ScanError::none && field.literal == "a " && field.field == "{:>4}"
+                && field.rest == " b",
+              "spec field returned");
     }
     {
-        auto const none = scan("plain text");
-        CHECK(!none.malformed && !none.field, "no field is not malformed");
+        auto const none = nextField("plain text");
+        CHECK(!none.malformed() && none.field.empty() && none.literal == "plain text",
+              "no field is not malformed");
     }
     {
-        auto const none = scan("{{}}");
-        CHECK(!none.malformed && !none.field, "escapes alone yield no field");
+        auto const  none = nextField("{{}}");
+        std::string text;
+        remote_fmt::detail::appendLiteral(text, none.literal);
+        CHECK(!none.malformed() && none.field.empty() && text == "{}",
+              "escapes alone yield no field");
     }
 }
 
@@ -1241,10 +1282,106 @@ struct remote_fmt::formatter<Suppressed> {
 
 #if REMOTE_FMT_USE_FMT_CHECK
 template<>
-struct remote_fmt::detail::host_type<Suppressed> {
+struct remote_fmt::detail::HostType<Suppressed> {
     using type = std::string_view;
 };
 #endif
+
+// The writer vocabulary (Printer: out, value, formatArguments, format_to): a formatter declares its descriptor and
+// writes the values it names, or declares none and writes through format_to (`*`). No wire byte written by hand.
+namespace {
+struct LoopPair {
+    int a;
+    int b;
+};
+
+struct Label {
+    std::string_view text;
+};
+
+struct Either {
+    bool     big;
+    unsigned n;
+};
+}   // namespace
+
+// a declared sub format: only the two numbers travel
+template<>
+struct remote_fmt::formatter<LoopPair> {
+    static consteval auto descriptor() {
+        return remote_fmt::subFormatDescriptor<int, int>(SC_LIFT("<{} {}>"));
+    }
+
+    template<typename Printer>
+    constexpr void format(LoopPair const& p,
+                          Printer&        printer) const {
+        printer.formatArguments(p.a, p.b);
+    }
+};
+
+// a value of another type's shape: declared as that type's descriptor, written through value()
+template<>
+struct remote_fmt::formatter<Label> {
+    static consteval auto descriptor() { return remote_fmt::descriptorOf<std::string_view>(); }
+
+    template<typename Printer>
+    constexpr void format(Label const& l,
+                          Printer&     printer) const {
+        printer.value(l.text);
+    }
+};
+
+// a shape chosen by the value: `*`, each branch a format_to of its own
+template<>
+struct remote_fmt::formatter<Either> {
+    template<typename Printer>
+    constexpr auto format(Either const& e,
+                          Printer&      printer) const {
+        if(e.big) { return format_to(printer, SC_LIFT("big {} ({})"), e.n, std::string_view{"x"}); }
+        return format_to(printer, SC_LIFT("small"));
+    }
+};
+
+#if REMOTE_FMT_USE_FMT_CHECK
+template<>
+struct remote_fmt::detail::HostType<LoopPair> {
+    using type = std::string_view;
+};
+
+template<>
+struct remote_fmt::detail::HostType<Label> {
+    using type = std::string_view;
+};
+
+template<>
+struct remote_fmt::detail::HostType<Either> {
+    using type = std::string_view;
+};
+#endif
+
+namespace {
+void writerVocabulary() {
+    static_assert(remote_fmt::descriptorOf<LoopPair>() == "F7:<{} {}>2:i4i4"_sc);
+    static_assert(remote_fmt::descriptorOf<Label>() == "s"_sc);
+    static_assert(remote_fmt::descriptorOf<Either>() == "*"_sc);
+    CHECK_RT("x <1 2>", "x {}"_sc, LoopPair{1, 2});
+    CHECK_RT("[<1 -2>, <3 4>]",
+             "{}"_sc,
+             std::vector<LoopPair>{
+               {1, -2},
+               {3,  4}
+    });
+    CHECK_RT("  <1 2>", "{:>7}"_sc, LoopPair{1, 2});
+    CHECK_RT("label: hi", "label: {}"_sc, Label{"hi"});
+    CHECK_RT("[\"hi\"]", "{}"_sc, std::array<Label, 1>{Label{"hi"}});
+    CHECK_RT("big 7 (x) / small", "{} / {}"_sc, Either{true, 7}, Either{false, 0});
+    CHECK_RT("optional(small)",
+             "{}"_sc,
+             std::optional<Either>{
+               Either{false, 0}
+    });
+}
+}   // namespace
 
 namespace {
 
@@ -1267,8 +1404,8 @@ void subFmtStringSpecs() {
         // call; the host still has to cope with untrusted bytes.
         bool       errorReported = false;
         auto const buffer        = rawSubFmtStringFrame("{:.2f}", "(+3 not logged)");
-        auto const [message, remaining, discarded]
-          = remote_fmt::parse(std::span{buffer}, emptyCatalog(), [&](std::string_view) {
+        auto const [message, remaining, discarded, catalogId]
+          = remote_fmt::parseMessage(std::span{buffer}, emptyCatalog(), [&](std::string_view) {
                 errorReported = true;
             });
         CHECK(!message, "numeric spec on a sub format string fails");
@@ -1347,7 +1484,7 @@ void quantityRoundTrips() {
     // the symbol is three bytes.
     CHECK_RT("     20 ℃", "{:9}"_sc, mpu::quantity_point{mpu::delta<si::degree_Celsius>(20)});
 
-    // Inside the wrappers and inside ranges, like any other argument -- so in_list and in_map
+    // Inside the wrappers and inside ranges, like any other argument -- so in_list and inMap
     // forwarding is covered too.
     CHECK_RT("optional(5 A)",
              "{}"_sc,
@@ -1364,12 +1501,10 @@ void quantityRoundTrips() {
 #endif
 }
 
-}   // namespace
-
-// The frame check (REMOTE_FMT_FRAME_CHECK, on by default): a checked frame starts with 0x56 and carries a CRC-8 before
+// The frame check (REMOTE_FMT_FRAME_CHECK, on by default): a checked frame starts with 0x57 and carries a CRC-8 before
 // its end marker; one flipped bit drops the frame with a message instead of decoding other text; a reader told the
 // image's kind of frame (the catalog's "FrameCheck") refuses the other kind loudly.
-static void frameCheck() {
+void frameCheck() {
     static constexpr auto checkInput = [] {
         std::array<std::byte, 9> bytes{};
         for(std::size_t i = 0; i != bytes.size(); ++i) {
@@ -1379,16 +1514,37 @@ static void frameCheck() {
     }();
     static_assert(
       remote_fmt::protocol::crcFinal(
-        remote_fmt::protocol::crcOver(remote_fmt::protocol::CrcInit, std::span{checkInput}))
+        remote_fmt::protocol::crcOver(remote_fmt::protocol::crcInit, std::span{checkInput}))
         == 0xDF,
       "CRC-8/AUTOSAR check value");
-    auto const  frame  = serialize("frame {} {}"_sc, 42, "ok");
+    // the table is the polynomial's, bit by bit
+    static_assert([] {
+        for(unsigned n = 0; n != 256; ++n) {
+            unsigned c = n;
+            for(int k = 0; k != 8; ++k) {
+                c = (c & 0x80U) != 0 ? ((c << 1U) ^ 0x2FU) & 0xFFU : (c << 1U) & 0xFFU;
+            }
+            if(remote_fmt::protocol::crcTable[n] != c) { return false; }
+        }
+        return true;
+    }());
+    crc_count::bytes = 0;
+    auto const frame = serialize("frame {} {}"_sc, 42, "ok");
+    // the encoder's CRC covers each byte before the CRC exactly once (once there were two passes over the staged bytes)
+    CHECK(crc_count::bytes == (REMOTE_FMT_TEST_EXPECT_FRAME_CHECK ? frame.size() - 2 : 0),
+          "every byte of a frame goes into its CRC once");
+    crc_count::bytes     = 0;
+    auto const longFrame = serialize("{} {} {}"_sc,
+                                     std::string_view{"a string longer than the staging bytes"},
+                                     7,
+                                     std::string(100, 'x'));
+    CHECK(crc_count::bytes == (REMOTE_FMT_TEST_EXPECT_FRAME_CHECK ? longFrame.size() - 2 : 0),
+          "also when the record is written in pieces");
     std::size_t errors = 0;
     auto const  count  = [&errors](std::string_view) { ++errors; };
     using remote_fmt::FrameCheck;
-#if REMOTE_FMT_FRAME_CHECK
-    CHECK(frame.front() == remote_fmt::protocol::Checked_start_marker,
-          "a checked frame by default");
+#if REMOTE_FMT_TEST_EXPECT_FRAME_CHECK
+    CHECK(frame.front() == remote_fmt::protocol::checkedStartMarker, "a checked frame by default");
     for(auto const expect : {FrameCheck::either, FrameCheck::required}) {
         errors       = 0;
         auto const r = remote_fmt::parseMessage(std::span{frame}, emptyCatalog(), count, expect);
@@ -1418,7 +1574,7 @@ static void frameCheck() {
     CHECK(decodedWrong == 0, "no damaged frame decodes");
     CHECK(silent == 0, "every damaged frame is said");
 #else
-    CHECK(frame.front() == remote_fmt::protocol::Start_marker, "an unchecked frame");
+    CHECK(frame.front() == remote_fmt::protocol::startMarker, "an unchecked frame");
     errors = 0;
     auto const r
       = remote_fmt::parseMessage(std::span{frame}, emptyCatalog(), count, FrameCheck::required);
@@ -1427,8 +1583,77 @@ static void frameCheck() {
 #endif
 }
 
+// Each encoder knob changes the bytes or the writes, never the text (README "The wire"). The suite
+// is built once per knob at its other value (tests/CMakeLists.txt); this checks that the build really has the knob it
+// claims, so a misspelled define fails instead of testing the defaults twice. FRAME_CHECK: frameCheck() above.
+struct CountingBackend {
+    std::vector<std::byte> memory;
+    std::size_t            writes{};
+
+    void write(std::span<std::byte const> data) {
+        ++writes;
+        memory.insert(memory.end(), data.begin(), data.end());
+    }
+};
+
+void knobEffects() {
+    remote_fmt::Printer<CountingBackend> printer{};
+    printer.print("{}"_sc, std::uint32_t{5});
+    auto const& backend = printer.getComBackend();
+    // start marker, the inline id (2), the length (1), "{}" 0x1e "u4", then the value: 5 as one LEB128 byte
+    auto constexpr valueAt = std::size_t{4} + "{}\x1eu4"sv.size();
+    CHECK(backend.memory.size()
+            == valueAt + 1 + (REMOTE_FMT_TEST_EXPECT_FRAME_CHECK != 0 ? 1 : 0) + 1,
+          "a whole frame");
+    CHECK(backend.memory.size() > valueAt && backend.memory[valueAt] == std::byte{5},
+          "5 goes out as one byte");
+#if REMOTE_FMT_TEST_EXPECT_STAGING_BYTES == 0
+    CHECK(backend.writes > 1, "STAGING_BYTES 0: every field is a write of its own");
+#else
+    CHECK(backend.writes == 1, "staged: a short record is one write");
+    remote_fmt::Printer<CountingBackend> longPrinter{};
+    longPrinter.print("{}"_sc,
+                      std::string_view{"a string longer than the staging bytes of the Printer"});
+    static_assert(REMOTE_FMT_STAGING_BYTES < 53, "the string above must not fit the staging bytes");
+    CHECK(longPrinter.getComBackend().writes > 1, "staged: a longer record goes out in pieces");
+#endif
+}
+
+// The bytes an integer takes (README "Descriptors"): 4 bytes as LEB128 (zigzag for signed), every other width raw,
+// little endian, whatever the value.
+void integerWidths() {
+    auto const valueBytes = [](auto value) {
+        remote_fmt::Printer<CountingBackend> printer{};
+        printer.print("{}"_sc, value);
+        auto const& m = printer.getComBackend().memory;
+        auto const  valueAt
+          = std::size_t{4}
+          + std::string_view{decltype(remote_fmt::described<decltype(value)>("{}"_sc)){}}.size();
+        auto const tail = std::size_t{1} + (REMOTE_FMT_TEST_EXPECT_FRAME_CHECK != 0 ? 1U : 0U);
+        return std::vector<std::byte>(std::next(m.begin(), static_cast<std::ptrdiff_t>(valueAt)),
+                                      std::prev(m.end(), static_cast<std::ptrdiff_t>(tail)));
+    };
+    auto const bytes = [](std::initializer_list<unsigned> list) {
+        std::vector<std::byte> out;
+        for(auto const b : list) { out.push_back(static_cast<std::byte>(b)); }
+        return out;
+    };
+    CHECK(valueBytes(std::uint32_t{5}) == bytes({5}), "u4 5: one LEB128 byte");
+    CHECK(valueBytes(std::uint32_t{300}) == bytes({0xAC, 0x02}), "u4 300: two LEB128 bytes");
+    CHECK(valueBytes(std::int32_t{-3}) == bytes({5}), "i4 -3: zigzag 5");
+    CHECK(valueBytes(std::uint16_t{5}) == bytes({5, 0}), "u2 5: two raw bytes");
+    CHECK(valueBytes(std::int16_t{-2}) == bytes({0xFE, 0xFF}), "i2 -2: two raw bytes, no zigzag");
+    CHECK(valueBytes(std::uint64_t{5}) == bytes({5, 0, 0, 0, 0, 0, 0, 0}), "u8 5: eight raw bytes");
+    CHECK(valueBytes(std::int64_t{-2}) == bytes({0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}),
+          "i8 -2: eight raw bytes, no zigzag");
+    CHECK(valueBytes(std::int8_t{-2}) == bytes({0xFE}), "i1 -2: one raw byte");
+}
+}   // namespace
+
 int main() {
     frameCheck();
+    knobEffects();
+    integerWidths();
     trivialRoundTrips();
     stringRoundTrips();
     rangeRoundTrips();
@@ -1436,6 +1661,7 @@ int main() {
     extendedTypeRoundTrips();
     timeRoundTrips();
     subFmtStringSpecs();
+    writerVocabulary();
     quantityRoundTrips();
     debugFormatInRanges();
     replacementFieldNumberLimit();
@@ -1452,16 +1678,12 @@ int main() {
     optionalInsideWrapperQuirk();
     enumFormatting();
     bitflagFormatting();
+    enumeratorValues();
     multipleMessages();
     malformedInput();
     nestingDepthLimit();
     malformedFormatString();
     replacementFieldScanRejections();
 
-    if(failures != 0) {
-        std::printf("%d test(s) failed\n", failures);
-        return 1;
-    }
-    std::printf("all tests passed\n");
-    return 0;
+    return remote_fmt::test::report();
 }

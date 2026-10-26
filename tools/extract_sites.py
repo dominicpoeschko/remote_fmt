@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
-"""Adds the call sites (REMOTE_FMT_SITE, src/remote_fmt/catalog.hpp) of a linked image to its
-string catalog json: each site's `[id, string]` to "StringConstants" and its function's signature
-to "Sites": {"<id>": "<signature>"}.
+"""Writes a linked image's string catalog json, once: the strings generate_string_constants.py found
+before the link (`--strings`, its `<target>_string_constants.prelink.json`), then the image's call sites
+(REMOTE_FMT_SITE, src/remote_fmt/catalog.hpp): each site's `{"id", "fmt", "args"}` entry (descriptor.py
+catalog_entry) to "StringConstants" and its function's signature to "Sites": {"<id>": "<signature>"};
+"FrameCheck"; the image's type entries (remote_fmt::detail::typeTag, descriptor.hpp) to "Types":
+{"<16 hex>": descriptor}. A site's string is `fmt 0x1e descriptors`, split into one descriptor per
+argument; the link fails on a site without descriptors, a descriptor that does not split, a type key
+that two texts share, a type reference without its entry and a site at 0xFFFF (the inline id). The
+catalog (`--json`) is replaced whole, only once everything is known: a failed step leaves the previous
+one as it was, and no reader ever sees half a catalog.
 """
 
 import argparse
@@ -12,6 +19,12 @@ import shutil
 import struct
 import subprocess
 import sys
+
+# a build runs this: importing the sibling modules writes no tools/__pycache__
+sys.dont_write_bytecode = True
+import descriptor  # noqa: E402
+from rf_symbols import (Error, find_demangler, invalid_utf8, read_symbols as read_elf_symbols,  # noqa: E402
+                        string_constant_bytes)
 
 SECTION = "remote_fmt_sites"
 ANCHOR = "_ZN10remote_fmt6detail10siteAnchorE"
@@ -26,82 +39,17 @@ SITE = re.compile(
     r"clIN(?:2sc14StringConstant|S[0-9A-Z]*_)IJ((?:Lcn?[0-9]+E)*)EE")
 CLANG_LOCAL_LAMBDA = re.compile(r"(?<![0-9])([0-9]+)\$_([0-9]+)")
 SHF_ALLOC = 0x2
-SHT_SYMTAB = 2
-STT_OBJECT = 1
 FIRST_SITE_ID = 0x8000
 ID_LIMIT = 1 << 16
-
-
-class Error(Exception):
-    pass
+INLINE_ID = 0xFFFF   # remote_fmt::protocol::InlineId: no site may sit there
+SEPARATOR = descriptor.SEPARATOR
+TYPE_TAG_MANGLED = "19REMOTE_FMT_TYPE_TAG"
 
 
 def read_symbols(image):
-    """(64-bit, catalog section indices with their flags, symbols as (name, value, section))."""
-    if image[:4] != b"\x7fELF":
-        raise Error("not an ELF file")
-    elf_class, data = image[4], image[5]
-    if data != 1:
-        raise Error("big endian ELF is not supported")
-    if elf_class == 1:
-        shoff, = struct.unpack_from("<I", image, 32)
-        shentsize, shnum, shstrndx = struct.unpack_from("<HHH", image, 46)
-        section = struct.Struct("<IIIIIIIIII")
-        symbol = struct.Struct("<IIIBBH")
-
-        def fields(raw):
-            name, value, _, info, _, shndx = raw
-            return name, value, info, shndx
-    elif elf_class == 2:
-        shoff, = struct.unpack_from("<Q", image, 40)
-        shentsize, shnum, shstrndx = struct.unpack_from("<HHH", image, 58)
-        section = struct.Struct("<IIQQQQIIQQ")
-        symbol = struct.Struct("<IBBHQQ")
-
-        def fields(raw):
-            name, info, _, shndx, value, _ = raw
-            return name, value, info, shndx
-    else:
-        raise Error(f"unknown ELF class {elf_class}")
-
-    raw = [section.unpack_from(image, shoff + i * shentsize)
-           for i in range(shnum)]
-
-    def string(table, offset):
-        start = raw[table][4] + offset
-        return image[start:image.index(b"\0", start)].decode()
-
-    catalog = {}
-    symbols = []
-    for index, (name, sh_type, flags, _, offset, size, link, *_) in enumerate(raw):
-        section_name = string(shstrndx, name)
-        if section_name == SECTION or section_name.startswith(SECTION + "."):
-            catalog[index] = flags
-        if sh_type == SHT_SYMTAB:
-            for i in range(size // symbol.size):
-                sym_name, value, info, shndx = fields(
-                    symbol.unpack_from(image, offset + i * symbol.size))
-                if sym_name and info & 0xF == STT_OBJECT:
-                    symbols.append((string(link, sym_name), value, shndx))
-    return elf_class == 2, catalog, symbols
-
-
-def find_demangler(nm=None):
-    """llvm-cxxfilt next to nm, else on PATH, else c++filt (which gives up on long symbols). What it
-    cannot read goes to the other one (demanglers())."""
-    candidates = []
-    if nm:
-        path = shutil.which(nm) or nm
-        for d, base in {os.path.split(path), os.path.split(os.path.realpath(path))}:
-            if "llvm-nm" in base:
-                candidates.append(os.path.join(
-                    d, base.replace("llvm-nm", "llvm-cxxfilt")))
-            candidates.append(os.path.join(d, "llvm-cxxfilt"))
-    candidates += [shutil.which("llvm-cxxfilt"), shutil.which("c++filt")]
-    for candidate in candidates:
-        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
-    raise Error("neither llvm-cxxfilt nor c++filt found")
+    """(64-bit, site section indices with their flags, symbols as (name, value, section)): read once per image, the
+    `elf` that frame_check_of, types_of, config_conflicts and sites_of take."""
+    return read_elf_symbols(image, lambda name: name == SECTION or name.startswith(SECTION + "."))
 
 
 def local_lambda_named(mangled):
@@ -126,8 +74,7 @@ def split_site(mangled):
             match = candidate
     if match is None:
         return None
-    text = bytes(-int(n[1:]) & 0xFF if n.startswith("n") else int(n)
-                 for n in re.findall(r"Lc(n?[0-9]+)E", match[4]))
+    text = string_constant_bytes(match[4])
     return "_Z" + mangled[len("_ZZZ"):match.start()], text
 
 
@@ -404,21 +351,83 @@ def demangle_sites(names, demangler):
     return parts
 
 
-FRAME_CHECK_MARKER = "remote_fmt_frame_check"
+FRAME_CHECK_MARKER = "remote_fmt_cfg_FRAME_CHECK_1_"
 
 
-def frame_check_of(image):
-    """Whether the image was built with REMOTE_FMT_FRAME_CHECK: remote_fmt.hpp then puts the marker symbol into the
-    site section (kept by the linker script's KEEP), so a reader of the catalog knows - never guesses - whether the
-    image's frames carry the CRC."""
-    _, sections, symbols = read_symbols(image)
+def frame_check_of(elf):
+    """Whether the image was built with REMOTE_FMT_FRAME_CHECK: config.hpp's marker of that value in the site section
+    (kept by the linker script's KEEP; config_conflicts refuses an image with both), so a reader of the catalog knows -
+    never guesses - whether the image's frames carry the CRC."""
+    _, sections, symbols = elf
     return any(name == FRAME_CHECK_MARKER and shndx in sections for name, _, shndx in symbols)
 
 
-def sites_of(image, demangler):
+def fnv1a64(data):
+    """descriptor.hpp desc::fnv1a64: the key of a type entry."""
+    h = 0xcbf29ce484222325
+    for b in data:
+        h ^= b
+        h = (h * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+    return h
+
+
+def type_key(text):
+    return f"{fnv1a64(text):016x}"
+
+
+def types_of(elf):
+    """{key: text} of the image's type entries; an Error when two texts share a key."""
+    _, sections, symbols = elf
+    types = {}
+    for name, _, shndx in symbols:
+        if shndx in sections and TYPE_TAG_MANGLED in name:
+            text = string_constant_bytes(name.split(".")[0])
+            key = type_key(text)
+            if types.setdefault(key, text) != text:
+                raise Error(f"type entries {types[key][:60]!r} and {text[:60]!r} share the key {key}: "
+                            f"rename one of the types")
+    return types
+
+
+def type_refs(text):
+    """The type keys a described string's descriptors refer to."""
+    return descriptor.type_refs(text.partition(SEPARATOR)[2])
+
+
+def missing_types(strings, types):
+    """[(where, key)] of the type references (of the strings and of the entries themselves) without an entry."""
+    missing = []
+    for where, text in strings:
+        for key in type_refs(text):
+            if key not in types:
+                missing.append((where, key))
+    for key, text in types.items():
+        for ref in descriptor.type_refs(text):
+            if ref not in types:
+                missing.append((f"type {key}", ref))
+    return missing
+
+
+CONFIG_MARKER = re.compile(r"remote_fmt_cfg_([A-Z_]+?)_([0-9]+)_")
+
+
+def config_conflicts(elf):
+    """The switches of src/remote_fmt/config.hpp that the image's TUs disagree on, as {switch: [values]} (switch:
+    REMOTE_FMT_<switch>): each TU that includes remote_fmt puts one marker per switch and value into the site
+    section."""
+    _, sections, symbols = elf
+    values = {}
+    for name, _, shndx in symbols:
+        match = CONFIG_MARKER.fullmatch(name)
+        if match and shndx in sections:
+            values.setdefault(match.group(1), set()).add(int(match.group(2)))
+    return {switch: sorted(seen) for switch, seen in values.items() if len(seen) > 1}
+
+
+def sites_of(elf, demangler):
     """({id: string bytes}, {id: signature}) of the call sites of an ELF image."""
     # as catalog.hpp siteId() counts: from address 0 with 32-bit pointers, from siteAnchor with 64
-    wide, sections, symbols = read_symbols(image)
+    wide, sections, symbols = elf
     for flags in sections.values():
         if not wide and flags & SHF_ALLOC:
             raise Error(f"the site tags are part of the image: the linker script needs "
@@ -442,34 +451,50 @@ def sites_of(image, demangler):
                 f"site {mangled[:120]!r} at {site_id:#x}: outside 0x8000-0xFFFF")
         if parts is None:
             raise Error(f"not a site tag this can read: {mangled[:300]}")
+        if site_id == INLINE_ID:
+            raise Error(
+                f"site {mangled[:120]!r} at {site_id:#x}, the inline id: one site more or less moves it")
+        if SEPARATOR not in parts[1]:
+            raise Error(f"site {mangled[:120]!r} names no descriptors: REMOTE_FMT_SITE()(remote_fmt::described"
+                        f"<Args...>(fmt)), not the plain format string")
         sites[site_id], strings[site_id] = parts
     return strings, sites
 
 
-def invalid_utf8(strings):
-    bad = []
-    for text in strings.values():
-        try:
-            text.decode("utf-8")
-        except UnicodeDecodeError:
-            bad.append(text)
-    return bad
-
-
-def merge(path, strings, sites, frame_check=False):
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-    taken = {entry[0] for entry in data.setdefault("StringConstants", [])}
+def catalog(prelink, strings, sites, frame_check=False, types=None):
+    """The catalog json's content: the generator's entries (`prelink`, what it wrote to --strings) and the sites'
+    entries in "StringConstants", then "Sites", "FrameCheck" and "Types"; an Error for a site on a string's id or a
+    type reference without its entry."""
+    entries = list(prelink["StringConstants"])
+    taken = {entry["id"] for entry in entries}
+    types = types or {}
+    everything = [
+        (f"string {entry['id']}", descriptor.entry_text(entry)) for entry in entries]
     for site_id in sorted(strings):
         if site_id in taken:
             raise Error(f"site id {site_id:#x} is a string's id too: the generator's ids must stay "
                         f"below {FIRST_SITE_ID:#x}")
-        data["StringConstants"].append(
-            [site_id, strings[site_id].decode("utf-8")])
-    data["Sites"] = {str(site_id): sites[site_id] for site_id in sorted(sites)}
-    # true: every frame of this image starts with 0x56 and carries a CRC-8 (remote_fmt.hpp REMOTE_FMT_FRAME_CHECK); a
-    # reader decodes it with the check required, and refuses an unchecked frame; false or absent: no check
-    data["FrameCheck"] = frame_check
+        entries.append(descriptor.catalog_entry(site_id, strings[site_id]))
+    everything += [(f"site {site_id:#x} ({sites.get(site_id, '?')[:80]})", text)
+                   for site_id, text in strings.items()]
+    missing = missing_types(everything, types)
+    if missing:
+        where, key = missing[0]
+        raise Error(f"{len(missing)} type reference(s) without an entry, first #{key} in {where}: a formatter that "
+                    f"returns typeDescriptor<T>() must call typeEntry<T>() in its format()")
+    return {
+        "StringConstants": entries,
+        "Sites": {str(site_id): sites[site_id] for site_id in sorted(sites)},
+        # true: every frame of this image starts with 0x57 and carries a CRC-8 (config.hpp REMOTE_FMT_FRAME_CHECK); a
+        # reader decodes it with the check required, and refuses an unchecked frame; false: no check
+        "FrameCheck": frame_check,
+        # the type entries the descriptors refer to by key (a reader resolves them once, when it loads the catalog)
+        "Types": {key: types[key].decode("utf-8") for key in sorted(types)},
+    }
+
+
+def write_json(path, data):
+    """`data` to `path` in one step (a temporary file renamed over it): a reader sees the old file or the new one."""
     tmp = path + ".tmp"
     # UTF-8, not "\u2026": a signature has an ellipsis in every abbreviated list
     with open(tmp, "w", encoding="utf-8") as f:
@@ -479,24 +504,41 @@ def merge(path, strings, sites, frame_check=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Add the call sites of a linked image to its string catalog json.")
+        description="Write the string catalog json of a linked image: its strings and its call sites.")
     parser.add_argument("--elf", required=True, help="the linked image")
-    parser.add_argument("--json", required=True,
-                        help="the catalog generate_string_constants.py wrote before the link")
+    parser.add_argument("--strings", required=True,
+                        help="the strings generate_string_constants.py found before the link (its .prelink.json)")
+    parser.add_argument("--json", required=True, help="the catalog to write")
     parser.add_argument(
         "--nm", help="the toolchain's nm: its llvm-cxxfilt is preferred")
     args = parser.parse_args(argv)
     try:
         with open(args.elf, "rb") as f:
-            image = f.read()
-        strings, sites = sites_of(image, find_demangler(args.nm))
-        bad = invalid_utf8(strings)
+            elf = read_symbols(f.read())
+        strings, sites = sites_of(elf, find_demangler(args.nm))
+        bad = invalid_utf8(strings.values())
         for text in bad:
             print(
                 f"extract_sites: string constant is not UTF-8: {text!r}", file=sys.stderr)
         if bad:
             return 1
-        merge(args.json, strings, sites, frame_check_of(image))
+        conflicts = config_conflicts(elf)
+        for switch, seen in sorted(conflicts.items()):
+            print(f"extract_sites: {args.elf}: TUs of this image disagree on REMOTE_FMT_{switch} (values "
+                  f"{', '.join(map(str, seen))}): set it for the whole image (CMake), never per TU", file=sys.stderr)
+        if conflicts:
+            return 1
+        types = types_of(elf)
+        bad = invalid_utf8(types.values())
+        for text in bad:
+            print(
+                f"extract_sites: type entry is not UTF-8: {text!r}", file=sys.stderr)
+        if bad:
+            return 1
+        with open(args.strings, encoding="utf-8") as f:
+            prelink = json.load(f)
+        write_json(args.json, catalog(prelink, strings,
+                   sites, frame_check_of(elf), types))
     except (Error, OSError, ValueError, struct.error, subprocess.CalledProcessError) as e:
         print(f"extract_sites: {args.elf}: {e}", file=sys.stderr)
         return 1

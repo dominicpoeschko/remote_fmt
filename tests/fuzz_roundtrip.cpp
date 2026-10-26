@@ -1,13 +1,13 @@
 // libFuzzer entry point for the *encode* half of the protocol. Drives
 // remote_fmt::Printer with fuzzer-chosen argument values, parses the produced bytes back
-// with remote_fmt::parse, and requires the result to match fmt's own rendering of the
+// with remote_fmt::parseMessage, and requires the result to match fmt's own rendering of the
 // same value.
 //
 // fuzz_parser feeds arbitrary bytes to the decoder, which is the right shape for a
 // wire-facing parser but cannot reach the serializer at all: every byte the serializer
 // would emit is a byte fuzz_parser has to guess. This harness starts from the other end,
-// so Printer, the formatter specializations and the size/type-identifier helpers in
-// type_identifier.hpp all get driven directly.
+// so Printer, the formatter specializations and their descriptors (describe.hpp,
+// formatters.hpp) all get driven directly.
 //
 // It is also a stronger oracle than "did not crash": for every type fmt can format
 // itself, a disagreement between fmt and the round trip is a real encode-or-decode bug,
@@ -16,6 +16,7 @@
 // Built with REMOTE_FMT_USE_CATALOG=false so string constants are emitted inline and the
 // binary needs no linker-generated catalog object. The cataloged paths are covered by
 // fuzz_parser (whose catalog map is populated) and by test_catalog.
+#include "TestSupport.ipp"
 #include "remote_fmt/parser.hpp"
 #include "remote_fmt/remote_fmt.hpp"
 
@@ -47,22 +48,9 @@ using namespace std::literals;
 
 namespace {
 
-struct VectorBackend {
-    std::vector<std::byte> memory;
-
-    void write(std::span<std::byte const> data) {
-        memory.insert(memory.end(), data.begin(), data.end());
-    }
-};
-
-// Leaked on purpose: no exit-time destructor, and the static reference keeps the
-// allocation reachable so LeakSanitizer stays quiet.
-std::unordered_map<std::uint16_t,
-                   std::string> const&
-emptyCatalog() {
-    static auto const& catalog = *new std::unordered_map<std::uint16_t, std::string>{};
-    return catalog;
-}
+using remote_fmt::test::emptyCatalog;
+using remote_fmt::test::enumValue;
+using remote_fmt::test::VectorBackend;
 
 // Pulls typed values out of the fuzzer's byte string. Reading past the end yields zeroes
 // instead of stopping, so even a one-byte input still builds and checks a full message -
@@ -71,7 +59,7 @@ class Reader {
 public:
     explicit Reader(std::span<std::byte const> data REMOTE_FMT_LIFETIMEBOUND) : data_{data} {}
 
-    bool exhausted() const { return data_.empty(); }
+    [[nodiscard]] bool exhausted() const { return data_.empty(); }
 
     std::uint8_t byte() {
         if(data_.empty()) { return 0; }
@@ -154,10 +142,11 @@ std::optional<std::string> roundTrip(auto fmtString,
                                      Args&&... args) {
     remote_fmt::Printer<VectorBackend> printer{};
     printer.print(fmtString, std::forward<Args>(args)...);
-    auto const& memory = printer.get_com_backend().memory;
-    auto const [message, remaining, discarded]
-      = remote_fmt::parse(std::span<std::byte const>{memory}, emptyCatalog(), [](std::string_view) {
-        });
+    auto const& memory = printer.getComBackend().memory;
+    auto const [message, remaining, discarded, catalogId]
+      = remote_fmt::parseMessage(std::span<std::byte const>{memory},
+                                 emptyCatalog(),
+                                 [](std::string_view) {});
     // A message the Printer just produced must be consumed whole: anything left over or
     // skipped means the framing disagrees with itself.
     if(!remaining.empty() || discarded != 0) { return std::nullopt; }
@@ -341,7 +330,7 @@ void oneMessage(Reader& reader) {
         {
             auto const style
               = fmt::fg(static_cast<fmt::color>(reader.take<std::uint32_t>() & 0xFFFFFFU))
-              | static_cast<fmt::emphasis>(reader.byte());
+              | enumValue<fmt::emphasis>(reader.byte());
             auto const value = reader.take<int>();
             compare(fmt::format("{}", fmt::styled(value, style)),
                     roundTrip("{}"_sc, fmt::styled(value, style)));

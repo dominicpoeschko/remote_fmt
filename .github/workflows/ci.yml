@@ -2,6 +2,9 @@ name: CI
 
 on:
     workflow_dispatch:
+    # Weekly: fuzz-explore runs 1800 s per fuzzer instead of 300 s (the other jobs run as on push).
+    schedule:
+        - cron: '0 3 * * 0'
     push:
         branches:
             - master
@@ -65,6 +68,16 @@ jobs:
             - name: Run tests
               run: cd build && ctest --output-on-failure
 
+            # clang-tidy (Kvasir_SDK master's tools/tidy.py and .clang-tidy, .github/actions/tidy) over this tree:
+            # this repository's findings (string_constant included) fail, the others' are foreign
+            - name: clang-tidy
+              if: matrix.compiler.cc == 'clang' && !matrix.compiler.sanitizer && !matrix.compiler.build_type
+              uses: kvasir-io/Kvasir_SDK/.github/actions/tidy@master
+              timeout-minutes: 30
+              with:
+                trees: build
+                nested: 'true'
+
     # The examples are the documentation, so they have to keep compiling against the tree rather than
     # only against whatever is on master. They assert their own results, so they are run as well as
     # built - which also covers the catalog generator end to end, python and nm included.
@@ -108,12 +121,23 @@ jobs:
                 ./catalog
                 ./catalog_generator
 
-    # Dedicated longer libFuzzer runs. Uses clang; the fuzz targets build for gcc
-    # automatically once gcc supports -fsanitize=fuzzer.
+    # The fuzzers' corpora, replayed once each (-runs=0): the same inputs on every machine and every run, so this job
+    # blocks a merge. Built like build-and-test's two clang ASan entries, where the ctest smokes run: clang, libc++
+    # with its debug mode, -DUSE_SANITIZER=address (ASan + UBSan + clang's integer group, fmt's and libstdc++'s
+    # wraparound in tests/fmt_sanitizer_ignorelist.txt); the fuzz targets add -fsanitize=fuzzer,address,undefined
+    # -fno-sanitize-recover=all themselves, so any sanitizer report, crash, leak, timeout or OOM on a corpus input
+    # fails it. Both build types: Release is what ships, Debug is the only one where the parser's asserts exist, and
+    # their codegen differs.
     #
-    # Both build types: Release is what ships, Debug is the only one where the parser's asserts
-    # exist at all. They also differ in codegen, so a sanitizer report from one is not guaranteed
-    # from the other. Measured execution rates are within 5% and the entries run in parallel.
+    # The parser replays its generated seeds, tests/corpus.tar.xz (the committed, minimized corpus, unpacked by the
+    # configure step into build/corpus_committed) and tests/corpus_regressions/ (every input a run once found); the
+    # descriptor fuzzer its generated seeds; the round-trip fuzzer builds its inputs from its own choices, so it runs a
+    # fixed sequence instead (-seed=1, a fixed run count). -max_len must stay at least as large as the biggest seed: a
+    # limit below a seed truncates it (the biggest, corpus_regressions/parser-nesting-stack-overflow, is 40 kB).
+    #
+    # Every fuzzer runs through tests/run_fuzzer.sh: its output goes to a log (build/fuzz-logs/ here,
+    # fuzz-artifacts/<fuzzer>/fuzz.log in fuzz-explore, uploaded with the crashes), the step shows the summary, or the
+    # end of the log on a failure.
     fuzz:
         runs-on: ubuntu-latest
         container:
@@ -127,7 +151,7 @@ jobs:
             - name: Set up C++ environment
               run: |
                 pacman -Syu --noconfirm --disable-download-timeout
-                pacman -S --noconfirm --disable-download-timeout git cmake base-devel python clang
+                pacman -S --noconfirm --disable-download-timeout git cmake base-devel python clang libc++ lld
 
             - name: Checkout repository
               uses: actions/checkout@v5
@@ -135,55 +159,141 @@ jobs:
                 submodules: recursive
 
             - name: Configure CMake
-              run: cmake -S tests -B build -DUSE_FORCE_FETCH=ON -DUSE_WARNINGS_AS_ERRORS=ON -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+              run: >
+                cmake -S tests -B build
+                -DUSE_FORCE_FETCH=ON
+                -DUSE_WARNINGS_AS_ERRORS=ON
+                -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+                -DUSE_SANITIZER=address
+                -DUSE_STD_LIB=libc++
+                -DUSE_STDLIB_DEBUG=true
               env:
                 CC: clang
                 CXX: clang++
 
             - name: Build fuzz targets
-              run: cmake --build build -j"$(nproc)" --target fuzz_parser fuzz_roundtrip fuzz_corpus_generator
+              run: cmake --build build -j"$(nproc)" --target fuzz_parser fuzz_roundtrip fuzz_descriptor fuzz_corpus_generator
 
-            - name: Generate seed corpus
-              run: ./build/fuzz_corpus_generator build/corpus
+            # build/corpus: the parser's seeds from real records; build/corpus_descriptor_seeds: the descriptor
+            # fuzzer's (<described string> 0x00 <values>, from the same records)
+            - name: Generate seed corpora
+              run: ./build/fuzz_corpus_generator build/corpus build/corpus_descriptor_seeds
 
-            # build/corpus_committed is the committed corpus, unpacked from tests/corpus.tar.xz
-            # by the CMake configure step. Starting from it rather than from the generated
-            # seeds is the difference between ~540 and ~3900 edges at INITED, so the whole
-            # 300s goes on new ground instead of re-deriving what the last run already found.
-            # Only build/corpus is writable; libFuzzer treats the extra directories as
-            # read-only.
-            #
-            # -max_len must stay at least as large as the biggest seed: a limit below a seed does
-            # not skip it, it truncates it, which would silently defang
-            # corpus_regressions/parser-nesting-stack-overflow (~16kB is needed to overflow).
-            # Absent the flag libFuzzer derives the limit from the largest corpus file, so pinning
-            # it keeps the ceiling off whatever the corpus happens to contain. Costs ~8% of the rate.
-            - name: Run parser fuzzer
+            - name: Replay the parser corpus
               run: >
-                ./build/fuzz_parser -max_total_time=300 -print_final_stats=1
-                -max_len=65536
-                -dict=tests/fuzz_parser.dict
+                tests/run_fuzzer.sh build/fuzz-logs/parser.log ./build/fuzz_parser -runs=0 -timeout=10 -max_len=65536
                 build/corpus build/corpus_committed tests/corpus_regressions
 
-            # Round-trip fuzzer: builds its own messages through Printer, so it needs no
-            # seed corpus. Compares against fmt, so it fails on silent encode/decode
-            # disagreements and not just on crashes.
-            - name: Run round-trip fuzzer
+            # !cancelled(): a finding in one fuzzer does not keep the others from running
+            - name: Replay the descriptor corpus
+              if: ${{ !cancelled() }}
               run: >
-                ./build/fuzz_roundtrip -max_total_time=300 -print_final_stats=1
-                build/corpus_roundtrip
+                tests/run_fuzzer.sh build/fuzz-logs/descriptor.log
+                ./build/fuzz_descriptor -runs=0 -timeout=10 build/corpus_descriptor_seeds
 
-            # JS actions cannot run in the bare archlinux container under act (no node),
-            # so skip the upload there - crash files still land in the act workdir.
+            - name: Round-trip fuzzer, fixed sequence
+              if: ${{ !cancelled() }}
+              run: |
+                mkdir -p build/corpus_roundtrip_replay
+                tests/run_fuzzer.sh build/fuzz-logs/roundtrip.log \
+                    ./build/fuzz_roundtrip -runs=100000 -seed=1 -use_cmp=0 -timeout=10 build/corpus_roundtrip_replay
+
+    # Fuzzing is a search, not a test: a time-bounded run explores differently on every machine and every seed, so
+    # it never blocks (continue-on-error: a finding marks this job red without failing the workflow). The seed is
+    # printed: reproduce with it, and add the crash input to tests/corpus_regressions so the `fuzz` job replays it
+    # from then on. Built as `fuzz` above, both build types.
+    #
+    # Time per fuzzer: 300 s on push / pull request / dispatch, 1800 s on the weekly schedule. FUZZ_SECONDS in the
+    # environment overrides both (act: --env FUZZ_SECONDS=20).
+    fuzz-explore:
+        runs-on: ubuntu-latest
+        continue-on-error: true
+        container:
+            image: archlinux:latest
+        strategy:
+            fail-fast: false
+            matrix:
+                build_type: [Release, Debug]
+        env:
+            FUZZ_DEFAULT_SECONDS: ${{ github.event_name == 'schedule' && '1800' || '300' }}
+
+        steps:
+            - name: Set up C++ environment
+              run: |
+                pacman -Syu --noconfirm --disable-download-timeout
+                pacman -S --noconfirm --disable-download-timeout git cmake base-devel python clang libc++ lld
+
+            - name: Checkout repository
+              uses: actions/checkout@v5
+              with:
+                submodules: recursive
+
+            - name: Configure CMake
+              run: >
+                cmake -S tests -B build
+                -DUSE_FORCE_FETCH=ON
+                -DUSE_WARNINGS_AS_ERRORS=ON
+                -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+                -DUSE_SANITIZER=address
+                -DUSE_STD_LIB=libc++
+                -DUSE_STDLIB_DEBUG=true
+              env:
+                CC: clang
+                CXX: clang++
+
+            - name: Build fuzz targets
+              run: cmake --build build -j"$(nproc)" --target fuzz_parser fuzz_roundtrip fuzz_descriptor fuzz_corpus_generator
+
+            - name: Generate seed corpora
+              run: |
+                ./build/fuzz_corpus_generator build/corpus build/corpus_descriptor_seeds
+                mkdir -p fuzz-artifacts/parser fuzz-artifacts/roundtrip fuzz-artifacts/descriptor build/explore_parser \
+                    build/explore_descriptor build/explore_roundtrip
+                seed=$(( $(od -An -N4 -tu4 /dev/urandom) % 2147483647 + 1 ))
+                echo "FUZZ_TIME=${FUZZ_SECONDS:-$FUZZ_DEFAULT_SECONDS}" >> "$GITHUB_ENV"
+                echo "FUZZ_SEED=$seed" >> "$GITHUB_ENV"
+                echo "fuzz seed: $seed (reproduce: ./build/fuzz_<name> -seed=$seed with the step's arguments)"
+
+            # Starting from build/corpus_committed rather than from the generated seeds alone is the difference between
+            # ~540 and ~3900 edges at INITED, so the whole run goes on new ground. Only the first directory is
+            # writable; libFuzzer treats the others as read-only. -max_len pinned as in `fuzz` (costs ~8% of the rate).
+            - name: Run parser fuzzer
+              run: >
+                tests/run_fuzzer.sh fuzz-artifacts/parser/fuzz.log
+                ./build/fuzz_parser -seed="$FUZZ_SEED" -max_total_time="$FUZZ_TIME" -print_final_stats=1
+                -max_len=65536
+                -dict=tests/fuzz_parser.dict
+                -artifact_prefix=fuzz-artifacts/parser/
+                build/explore_parser build/corpus build/corpus_committed tests/corpus_regressions
+
+            # A described string and values through the parser's walker and the catalog reader's type resolution. The
+            # parser dictionary carries its descriptor tokens.
+            - name: Run descriptor fuzzer
+              if: ${{ !cancelled() }}
+              run: >
+                tests/run_fuzzer.sh fuzz-artifacts/descriptor/fuzz.log
+                ./build/fuzz_descriptor -seed="$FUZZ_SEED" -max_total_time="$FUZZ_TIME" -print_final_stats=1
+                -dict=tests/fuzz_parser.dict
+                -artifact_prefix=fuzz-artifacts/descriptor/
+                build/explore_descriptor build/corpus_descriptor_seeds
+
+            # Builds its own messages through Printer, so no seed corpus and no dictionary (its input picks values, not
+            # bytes of a frame). Compares against fmt: it fails on silent encode/decode disagreements, not just crashes.
+            - name: Run round-trip fuzzer
+              if: ${{ !cancelled() }}
+              run: >
+                tests/run_fuzzer.sh fuzz-artifacts/roundtrip/fuzz.log
+                ./build/fuzz_roundtrip -seed="$FUZZ_SEED" -max_total_time="$FUZZ_TIME" -print_final_stats=1
+                -artifact_prefix=fuzz-artifacts/roundtrip/
+                build/explore_roundtrip
+
+            # JS actions cannot run in the bare archlinux container under act (no node), so skip the upload there - the
+            # artifacts stay in the act workdir.
             - name: Upload crash artifacts
               if: failure() && !env.ACT
               uses: actions/upload-artifact@v4
               with:
                 # Per build type: upload-artifact@v4 rejects a name another job already uploaded.
                 name: fuzz-crashes-${{ matrix.build_type }}
-                path: |
-                  crash-*
-                  leak-*
-                  timeout-*
-                  oom-*
+                path: fuzz-artifacts/
                 if-no-files-found: ignore

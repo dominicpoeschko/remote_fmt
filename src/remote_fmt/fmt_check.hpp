@@ -5,16 +5,17 @@
 // The spec is not applied to the type the device serialized: the host parser reconstructs a value
 // and formats that. host_type below maps one to the other, mirroring parser.hpp.
 
-#include "catalog.hpp"
+#include "traits.hpp"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <string_constant/string_constant.hpp>
 #include <string_view>
 #include <type_traits>
 #include <utility>
 
-#if !defined(REMOTE_FMT_USE_FMT_CHECK)
+#ifndef REMOTE_FMT_USE_FMT_CHECK
     #if __has_include(<fmt/format.h>) && __has_include(<fmt/ranges.h>)
         #define REMOTE_FMT_USE_FMT_CHECK 1
     #else
@@ -28,8 +29,8 @@
 
 // Can fmt/chrono.h and fmt/std.h be included? Without localization they cannot unless fmt.patch is
 // applied, which this header cannot detect - the cross branch of CMakeLists.txt sets it to 1.
-// At 0, duration/optional/variant/expected degrade to unchecked_arg; other fields stay checked.
-    #if !defined(REMOTE_FMT_FMT_CHECK_FULL)
+// At 0, duration/optional/variant/expected degrade to UncheckedArg; other fields stay checked.
+    #ifndef REMOTE_FMT_FMT_CHECK_FULL
         #if defined(_LIBCPP_HAS_LOCALIZATION) && !_LIBCPP_HAS_LOCALIZATION
             #define REMOTE_FMT_FMT_CHECK_FULL 0
         #elif __has_include(<fmt/std.h>) && __has_include(<fmt/chrono.h>)
@@ -39,39 +40,7 @@
         #endif
     #endif
 
-    #ifdef __clang__
-        #pragma clang diagnostic push
-        #pragma clang diagnostic ignored "-Wduplicate-enum"
-        #pragma clang diagnostic ignored "-Wsign-conversion"
-        #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
-        #pragma clang diagnostic ignored "-Wunsafe-buffer-usage-in-libc-call"
-        #pragma clang diagnostic ignored "-Wswitch-default"
-        #pragma clang diagnostic ignored "-Wswitch-enum"
-        #pragma clang diagnostic ignored "-Wfloat-equal"
-        #pragma clang diagnostic ignored "-Wshorten-64-to-32"
-        #pragma clang diagnostic ignored "-Wreserved-macro-identifier"
-        #pragma clang diagnostic ignored "-Wextra-semi"
-        #pragma clang diagnostic ignored "-Wextra-semi-stmt"
-        #pragma clang diagnostic ignored "-Wundefined-func-template"
-        #pragma clang diagnostic ignored "-Wweak-vtables"
-        #pragma clang diagnostic ignored "-Wglobal-constructors"
-        #pragma clang diagnostic ignored "-Wmissing-noreturn"
-        #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        #pragma clang diagnostic ignored "-Wdocumentation"
-        #pragma clang diagnostic ignored "-Wdocumentation-unknown-command"
-    #endif
-    #ifdef __GNUC__
-        #pragma GCC diagnostic push
-        #pragma GCC diagnostic ignored "-Wsign-conversion"
-    #endif
-
-    #include <fmt/format.h>
-    #include <fmt/ranges.h>
-
-    #if REMOTE_FMT_FMT_CHECK_FULL
-        #include <fmt/chrono.h>
-        #include <fmt/std.h>
-    #endif
+    #include "detail/fmt_wall.hpp"
 
     #include <chrono>
     #include <expected>
@@ -82,52 +51,56 @@
     #include <variant>
     #include <vector>
 
-    #ifdef __GNUC__
-        #pragma GCC diagnostic pop
+REMOTE_FMT_DETAIL_FMT_WALL_BEGIN
+    #include <fmt/format.h>
+    #include <fmt/ranges.h>
+
+    #if REMOTE_FMT_FMT_CHECK_FULL
+        #include <fmt/chrono.h>
+        #include <fmt/std.h>
     #endif
-    #ifdef __clang__
-        #pragma clang diagnostic pop
-    #endif
+REMOTE_FMT_DETAIL_FMT_WALL_END
 
 namespace remote_fmt { namespace detail {
 
-    // For an argument whose fmt formatter is unreachable here (see degrades_to_unchecked). Swallows
+    // For an argument whose fmt formatter is unreachable here (see degradesToUnchecked). Swallows
     // any spec, so it holds its place in the field sequence and the rest stay checked.
-    struct unchecked_arg {};
+    struct UncheckedArg {};
 
     template<typename T>
-    struct host_type {
+    struct HostType {
         using type = T;
     };
 
     template<typename T>
-    using host_type_t = typename host_type<std::remove_cvref_t<T>>::type;
+    using host_type_t = typename HostType<std::remove_cvref_t<T>>::type;
 
-    template<typename T>
-    struct host_type<T*> {
+    // the one pointer with a formatter besides void const* (which maps to itself) and nullptr_t
+    template<>
+    struct HostType<void*> {
         using type = void const*;
     };
 
     // formatter<std::byte> puts a 1-byte unsigned on the wire.
     template<>
-    struct host_type<std::byte> {
+    struct HostType<std::byte> {
         using type = std::uint8_t;
     };
 
-    template<is_string_like T>
-    struct host_type<T> {
+    template<IsStringLike T>
+    struct HostType<T> {
         using type = std::string_view;
     };
 
-    template<char... chars>
-    struct host_type<sc::StringConstant<chars...>> {
+    template<char... Chars>
+    struct HostType<sc::StringConstant<Chars...>> {
         using type = std::string_view;
     };
 
-    // A string literal is not is_string_like (no .size()), so without this it would match the range
+    // A string literal is not IsStringLike (no .size()), so without this it would match the range
     // mapping below and fmt would check the spec against a range of chars.
     template<std::size_t N>
-    struct host_type<char[N]> {
+    struct HostType<char[N]> {
         using type = std::string_view;
     };
 
@@ -135,12 +108,12 @@ namespace remote_fmt { namespace detail {
     // otherwise. The spec must suit both, hence the second check via host_type_alt.
     template<typename T>
         requires std::is_enum_v<T> && (!std::is_same_v<std::byte, T>)
-    struct host_type<T> {
+    struct HostType<T> {
         using type = std::string_view;
     };
 
-    template<is_tuple_like_but_not_range T>
-    struct host_type<T> {
+    template<IsTupleLikeButNotRange T>
+    struct HostType<T> {
         using type = decltype([]<std::size_t... Is>(std::index_sequence<Is...>) {
             return std::tuple<host_type_t<std::tuple_element_t<Is, T>>...>{};
         }(std::make_index_sequence<std::tuple_size_v<T>>{}));
@@ -148,8 +121,8 @@ namespace remote_fmt { namespace detail {
 
     // Category matters: fmt renders a list as [...], a set as {...}, a map as {k: v}, and hands a
     // nested element spec ("{::>4}") to the element's own formatter.
-    template<is_range_but_not_string_like T>
-    struct host_type<T> {
+    template<IsRangeButNotStringLike T>
+    struct HostType<T> {
         using type = std::vector<host_type_t<std::ranges::range_value_t<T>>>;
     };
 
@@ -157,83 +130,75 @@ namespace remote_fmt { namespace detail {
     // rendering, and rebuilding an arbitrary container is impossible when it has a non-type template
     // parameter (Kvasir::StaticMap<K, V, Capacity>).
     //
-    // Derived from the element type, never from T::key_type or T::mapped_type: remote_fmt.hpp reads
-    // neither - is_map only picks the RangeType tag, and elements go through formatter<range_value_t>.
+    // Derived from the element type, never from T::key_type or T::mapped_type: the range formatter reads
+    // neither - IsMap only picks the `M` descriptor, and elements go through formatter<range_value_t>.
     // A mapping that demanded more than the serializer would turn a supported type into a build error.
     // For the same reason the element requirement is in the constraint, so a map-like whose element is
     // not a pair falls back to the plain range mapping instead of failing.
     //
-    // Repeating is_range_but_not_string_like is required for subsumption; without it the partial
+    // Repeating IsRangeButNotStringLike is required for subsumption; without it the partial
     // specializations are ambiguous.
     template<typename T>
-        requires is_range_but_not_string_like<T> && is_map<T>
-              && is_tuple_like<std::ranges::range_value_t<T>>
+        requires IsRangeButNotStringLike<T> && IsMap<T>
+              && IsTupleLike<std::ranges::range_value_t<T>>
               && (std::tuple_size_v<std::ranges::range_value_t<T>> == 2)
-    struct host_type<T> {
+    struct HostType<T> {
         using element = std::ranges::range_value_t<T>;
         using type    = std::map<host_type_t<std::tuple_element_t<0, element>>,
                                  host_type_t<std::tuple_element_t<1, element>>>;
     };
 
     template<typename T>
-        requires is_range_but_not_string_like<T> && is_set<T>
-    struct host_type<T> {
+        requires IsRangeButNotStringLike<T> && IsSet<T>
+    struct HostType<T> {
         using type = std::set<host_type_t<std::ranges::range_value_t<T>>>;
     };
 
     // In both modes: since C++26 an optional is a range too, and must not map to a vector.
     template<typename T>
-    struct host_type<std::optional<T>> {
+    struct HostType<std::optional<T>> {
         using type = std::optional<host_type_t<T>>;
     };
 
     #if REMOTE_FMT_FMT_CHECK_FULL
     // Primary handles expected<void, E>: host_type_t<void> would be ill-formed.
     template<typename T, typename E>
-    struct host_type<std::expected<T, E>> {
+    struct HostType<std::expected<T, E>> {
         using type = std::expected<T, host_type_t<E>>;
     };
 
     template<typename T, typename E>
         requires(!std::is_void_v<T>)
-    struct host_type<std::expected<T, E>> {
+    struct HostType<std::expected<T, E>> {
         using type = std::expected<host_type_t<T>, host_type_t<E>>;
     };
 
     template<typename... Ts>
-    struct host_type<std::variant<Ts...>> {
+    struct HostType<std::variant<Ts...>> {
         using type = std::variant<host_type_t<Ts>...>;
     };
 
     // Serialized as time_since_epoch() and formatted as a duration by parser.hpp.
     template<typename Clock, typename Duration>
-    struct host_type<std::chrono::time_point<Clock, Duration>> {
+    struct HostType<std::chrono::time_point<Clock, Duration>> {
         using type = Duration;
-    };
-    #endif
-
-    #if __has_include(<fmt/color.h>)
-    // Both fmt and parser.hpp forward the spec to the payload's formatter.
-    template<typename T>
-    struct host_type<fmt::detail::styled_arg<T>> {
-        using type = host_type_t<T>;
     };
     #endif
 
     // As host_type, but an enum becomes its underlying integer.
     template<typename T>
-    struct host_type_alt {
+    struct HostTypeAlt {
         using type = host_type_t<T>;
     };
 
     template<typename T>
-    using host_type_alt_t = typename host_type_alt<std::remove_cvref_t<T>>::type;
+    using host_type_alt_t = typename HostTypeAlt<std::remove_cvref_t<T>>::type;
 
     template<typename T>
         requires std::is_enum_v<T> && (!std::is_same_v<std::byte, T>)
-    struct host_type_alt<T> {
+    struct HostTypeAlt<T> {
         using underlying = std::underlying_type_t<T>;
-        // Widened like remote_fmt.hpp does, so it prints as a number rather than a glyph.
+        // Widened like the enum formatter does (formatters.hpp), so it prints as a number rather than a glyph.
         using type = std::conditional_t<
           std::is_same_v<underlying, char>,
           std::conditional_t<std::is_unsigned_v<underlying>, std::uint8_t, std::int8_t>,
@@ -243,14 +208,14 @@ namespace remote_fmt { namespace detail {
 }}   // namespace remote_fmt::detail
 
 template<>
-struct fmt::formatter<remote_fmt::detail::unchecked_arg> {
+struct fmt::formatter<remote_fmt::detail::UncheckedArg> {
     // Accepts any spec. std::ranges::find because incrementing fmt's raw pointer by hand trips
     // -Wunsafe-buffer-usage.
     static constexpr auto parse(fmt::parse_context<char>& ctx) -> char const* {
         return std::ranges::find(ctx.begin(), ctx.end(), '}');
     }
 
-    static auto format(remote_fmt::detail::unchecked_arg,
+    static auto format(remote_fmt::detail::UncheckedArg,
                        fmt::format_context& ctx) {
         return ctx.out();
     }
@@ -260,75 +225,75 @@ namespace remote_fmt { namespace detail {
 
     // Without REMOTE_FMT_FMT_CHECK_FULL fmt cannot format these, so their spec stays unchecked.
     template<typename T>
-    inline constexpr bool degrades_to_unchecked = false;
+    inline constexpr bool degradesToUnchecked = false;
 
     #if !REMOTE_FMT_FMT_CHECK_FULL
     template<typename Rep, typename Period>
-    inline constexpr bool degrades_to_unchecked<std::chrono::duration<Rep, Period>> = true;
+    inline constexpr bool degradesToUnchecked<std::chrono::duration<Rep, Period>> = true;
     template<typename Clock, typename Duration>
-    inline constexpr bool degrades_to_unchecked<std::chrono::time_point<Clock, Duration>> = true;
+    inline constexpr bool degradesToUnchecked<std::chrono::time_point<Clock, Duration>> = true;
     template<typename T>
-    inline constexpr bool degrades_to_unchecked<std::optional<T>> = true;
+    inline constexpr bool degradesToUnchecked<std::optional<T>> = true;
     template<typename T, typename E>
-    inline constexpr bool degrades_to_unchecked<std::expected<T, E>> = true;
+    inline constexpr bool degradesToUnchecked<std::expected<T, E>> = true;
     template<typename... Ts>
-    inline constexpr bool degrades_to_unchecked<std::variant<Ts...>> = true;
+    inline constexpr bool degradesToUnchecked<std::variant<Ts...>> = true;
     #endif
 
     // Anything else has its own remote_fmt::formatter, a sub format string the host renders to text
     // before applying the spec (applyFieldToSubFmtString): check the spec as a string's. A formatter
     // that forwards to another type (uc_log::Metric) specializes host_type instead.
     template<typename H>
-    struct checkable {
+    struct Checkable {
         using type = std::conditional_t<
           fmt::is_formattable<H>::value,
           H,
-          std::conditional_t<degrades_to_unchecked<H>, unchecked_arg, std::string_view>>;
+          std::conditional_t<degradesToUnchecked<H>, UncheckedArg, std::string_view>>;
     };
 
     template<typename H>
-    using checkable_host_t = typename checkable<H>::type;
+    using checkable_host_t = typename Checkable<H>::type;
 
     // Element by element, so a container of such types still has its own spec checked.
     template<typename T>
-    struct checkable<std::vector<T>> {
+    struct Checkable<std::vector<T>> {
         using type = std::vector<checkable_host_t<T>>;
     };
 
     template<typename T>
-    struct checkable<std::set<T>> {
+    struct Checkable<std::set<T>> {
         using type = std::set<checkable_host_t<T>>;
     };
 
     template<typename K, typename V>
-    struct checkable<std::map<K, V>> {
+    struct Checkable<std::map<K, V>> {
         using type = std::map<checkable_host_t<K>, checkable_host_t<V>>;
     };
 
     template<typename... Ts>
-    struct checkable<std::tuple<Ts...>> {
+    struct Checkable<std::tuple<Ts...>> {
         using type = std::tuple<checkable_host_t<Ts>...>;
     };
 
     #if REMOTE_FMT_FMT_CHECK_FULL
     template<typename T>
-    struct checkable<std::optional<T>> {
+    struct Checkable<std::optional<T>> {
         using type = std::optional<checkable_host_t<T>>;
     };
 
     template<typename T, typename E>
-    struct checkable<std::expected<T, E>> {
+    struct Checkable<std::expected<T, E>> {
         using type = std::expected<T, checkable_host_t<E>>;
     };
 
     template<typename T, typename E>
         requires(!std::is_void_v<T>)
-    struct checkable<std::expected<T, E>> {
+    struct Checkable<std::expected<T, E>> {
         using type = std::expected<checkable_host_t<T>, checkable_host_t<E>>;
     };
 
     template<typename... Ts>
-    struct checkable<std::variant<Ts...>> {
+    struct Checkable<std::variant<Ts...>> {
         using type = std::variant<checkable_host_t<Ts>...>;
     };
     #endif
@@ -340,9 +305,9 @@ namespace remote_fmt { namespace detail {
     using checkable_alt_t = checkable_host_t<host_type_alt_t<T>>;
 
     template<typename... Args,
-             char... chars>
-    consteval void checkFormatStringWithFmt(sc::StringConstant<chars...>) {
-        constexpr auto stringView = std::string_view{sc::StringConstant<chars...>{}};
+             char... Chars>
+    consteval void checkFormatStringWithFmt(sc::StringConstant<Chars...>) {
+        constexpr auto stringView = std::string_view{sc::StringConstant<Chars...>{}};
 
         // Constructing fmt::format_string runs fmt's checker; in a consteval function a rejection
         // becomes a compile error at the log line. It cannot be reduced to a bool for static_assert -
@@ -368,8 +333,8 @@ namespace remote_fmt { namespace detail {
 
 namespace remote_fmt { namespace detail {
     template<typename... Args,
-             char... chars>
-    consteval void checkFormatStringWithFmt(sc::StringConstant<chars...>) {}
+             char... Chars>
+    consteval void checkFormatStringWithFmt(sc::StringConstant<Chars...>) {}
 }}   // namespace remote_fmt::detail
 
 #endif

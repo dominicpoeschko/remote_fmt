@@ -5,7 +5,6 @@
 #include <remote_fmt/catalog_helpers.hpp>
 #include <remote_fmt/parser.hpp>
 #include <remote_fmt/remote_fmt.hpp>
-#include <remote_fmt/type_identifier.hpp>
 #include <span>
 #include <type_traits>
 #include <vector>
@@ -35,21 +34,20 @@ int main() {
     //The print-function is called and the CommunicationBackend handles
     //communication with the remote device.
     printer.print("Test {}"_sc, 123);
-    assert(!printer.get_com_backend().memory.empty());
+    assert(!printer.getComBackend().memory.empty());
 
     //The data is sent to the input buffer of the remote device.
-    auto const& buffer = printer.get_com_backend().memory;
+    auto const& buffer = printer.getComBackend().memory;
 
     //The remote device parses the data from the buffer with a catalog from the json file.
     //target_generate_string_constants writes it next to the binary, named after the target.
-    auto const catalog
-      = remote_fmt::parseStringConstantsFromJsonFile("catalog_generator_string_constants.json");
+    auto const catalog = remote_fmt::readCatalogFile("catalog_generator_string_constants.json");
     if(!catalog) {
-        fmt::print("{}\n", catalog.error());
+        fmt::print("catalog_generator_string_constants.json: {}\n", catalog.error());
         return 1;
     }
-    auto const& [message, remainingBytes, discardedBytes]
-      = remote_fmt::parse(std::span{buffer}, *catalog, [](auto const&) {});
+    auto const& [message, remainingBytes, discardedBytes, catalogId]
+      = remote_fmt::parseMessage(std::span{buffer}, catalog->strings, [](auto const&) {});
 
     assert(remainingBytes.size() == 0);
     assert(discardedBytes == 0);

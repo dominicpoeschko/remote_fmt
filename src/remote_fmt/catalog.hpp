@@ -3,8 +3,10 @@
 
 // A cataloged string travels as a 16-bit id:
 // - catalog<CFS>(): 0x0000-0x7FFF, generated before the link (tools/generate_string_constants.py).
-// - REMOTE_FMT_SITE(): 0x8000-0xFFFF, 0x8000 + the address of a tag whose symbol names the string
+// - REMOTE_FMT_SITE(): 0x8000-0xFFFE, 0x8000 + the address of a tag whose symbol names the string
 //   and the enclosing function; tools/extract_sites.py adds both to the catalog after the link.
+//   The string is a described one (describe.hpp described<Args...>(fmt)): the format string, 0x1e and the
+//   descriptors of the values that follow the id. 0xFFFF is no id: an inline string follows.
 //   The target's linker script needs
 //     remote_fmt_sites 0 (INFO) : { KEEP(*(remote_fmt_sites remote_fmt_sites.*)) }
 //   A host executable gets cmake/remote_fmt_sites_host.ld and counts from siteAnchor.
@@ -15,18 +17,12 @@ using catalog_id = std::uint16_t;
 template<typename CFS>
 catalog_id catalog();
 
-/// The first of a run of consecutive ids, one per name in `NamesCFS` (the names joined with
-/// '\0'), in order: an enum's names as one block, so a name is `base + index` at run time
-/// instead of a switch over every enumerator. Generated like catalog<>.
-template<typename NamesCFS>
-catalog_id catalog_block();
-
 struct SiteId {
     catalog_id id;
 };
 
 namespace detail {
-    inline constexpr catalog_id FirstSiteId = 0x8000;
+    inline constexpr catalog_id firstSiteId = 0x8000;
 
 #if UINTPTR_MAX > 0xFFFFFFFFU
     [[gnu::used, gnu::section("remote_fmt_sites")]] inline char siteAnchor{};
@@ -36,9 +32,9 @@ namespace detail {
         auto const address = reinterpret_cast<std::uintptr_t>(tag);
 #if UINTPTR_MAX > 0xFFFFFFFFU
         auto const offset = address - reinterpret_cast<std::uintptr_t>(&siteAnchor);
-        return static_cast<catalog_id>(FirstSiteId | (offset & 0x7FFFU));
+        return static_cast<catalog_id>(firstSiteId | (offset & 0x7FFFU));
 #else
-        return static_cast<catalog_id>(address + FirstSiteId);
+        return static_cast<catalog_id>(address + firstSiteId);
 #endif
     }
 }   // namespace detail
@@ -57,7 +53,7 @@ namespace detail {
     #define REMOTE_FMT_DETAIL_COUNTER_POP
 #endif
 
-// `REMOTE_FMT_SITE()(fmt)`: the id of `fmt` at this call site. The tag is writable because LTO
+// `REMOTE_FMT_SITE()(described<Args...>(fmt))`: the id of the line at this call site. The tag is writable because LTO
 // merges identical constants. Without a catalog the string travels inline: no tag, id 0.
 #if defined(REMOTE_FMT_USE_CATALOG) && !(REMOTE_FMT_USE_CATALOG)
     #define REMOTE_FMT_SITE() [](auto const&) -> ::remote_fmt::catalog_id { return 0; }

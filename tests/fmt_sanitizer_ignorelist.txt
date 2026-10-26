@@ -3,7 +3,9 @@
 # such arithmetic even though it is not UB, so exempt fmt's sources from exactly those
 # checks. Real UB checks (float-cast-overflow, ...) stay active inside fmt.
 # The pattern does not match remote_fmt sources - those contain "_fmt/", not "/fmt/".
+# libstdc++'s basic_string compare (a std::map<std::string, int> in fuzz_roundtrip) wraps the same way on purpose.
 [unsigned-integer-overflow]
 src:*/fmt/*
+src:*/include/c++/*
 [unsigned-shift-base]
 src:*/fmt/*

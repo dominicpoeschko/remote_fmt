@@ -17,6 +17,7 @@ import unittest.mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.dont_write_bytecode = True  # no __pycache__ next to the imported tools
 sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+import descriptor as ds  # noqa: E402
 import extract_sites as ex  # noqa: E402
 
 
@@ -102,6 +103,79 @@ class SplitTests(unittest.TestCase):
 
     def test_numbers_that_are_not_its_length_stay(self):
         self.assertEqual(ex.local_lambda_named("_Z12$_0x"), "_Z12$_0x")
+
+
+class DescriptorTests(unittest.TestCase):
+    def test_references(self):
+        d = b"u4O#0123456789abcdef(k2:#x)" + b"F5:{:#x}1:#fedcba9876543210" + \
+            b"Ei41:-1,2:#z" + b"Ru46:{}{:#}0:1:3,0:"
+        self.assertEqual(ds.type_refs(
+            d), ["0123456789abcdef", "fedcba9876543210"])
+
+    # every kind, one argument each, in a row: the split cuts after each complete descriptor
+    EVERY_KIND = [b"b", b"c", b"u1", b"i8", b"f4", b"p4", b"s", b"k2:ok", b"d1/1000i8", b"Ou2", b"Xvi4", b"V2:u4f4",
+                  b"Lu1", b"Su2", b"M(su4)", b"Ai2", b"(u1i2)", b"Q2: Vf4", b"Ys", b"*", b"F3:a{}1:u4",
+                  b"Ei12:0,1:a1,1:b", b"Gu12:1,1:x2,1:y", b"Ei11:-5,1:n", b"Ru42:{}1:4,1:3,0:", b"ru42:1,1:a2,1:b",
+                  b"#0123456789abcdef", b"()", b"(V1:k3:a)bF2:{}0:)"]
+
+    def test_every_kind_reads(self):
+        self.assertEqual(ds.split_arguments(
+            b"".join(self.EVERY_KIND)), self.EVERY_KIND)
+
+    # a register and its Flags as Kvasir_SDK's RegisterFmt.hpp writes them (a type entry's text in an RP2350 image)
+    REGISTERS = [b'Ru473:systick::csr(\n"countflag": {}\n"clksource": {}\n"tickint": {}\n"enable": {})0:4:65536,2:0,'
+                 b'26:timer_has_not_counted_to_01,22:timer_has_counted_to_04,2:0,8:external1,9:processor2,2:0,'
+                 b'18:interrupt_disabled1,17:interrupt_enabled1,2:0,19:counter_is_disabled1,20:counter_is_operating',
+                 b"ru44:65536,9:countflag4,9:clksource2,7:tickint1,6:enable"]
+
+    def test_registers_split(self):
+        self.assertEqual(ds.split_arguments(
+            b"i8" + b"".join(self.REGISTERS) + b"u4"), [b"i8", *self.REGISTERS, b"u4"])
+
+    def test_a_malformed_descriptor_is_an_error(self):
+        for bad in (b"u3", b"k9:ab", b"V2:u4", b"(u4", b"#12", b"Z", b"d-1/1u4", b"E-u11:0,1:a", b"u", b"F2:{}"):
+            with self.subTest(descriptor=bad), self.assertRaises(ex.Error):
+                ds.split_arguments(bad)
+
+    def test_too_deep_is_an_error(self):
+        ds.split_arguments(b"O" * 64 + b"u4")
+        with self.assertRaisesRegex(ex.Error, "too deep"):
+            ds.split_arguments(b"O" * 65 + b"u4")
+
+    def test_catalog_entries(self):
+        self.assertEqual(ds.catalog_entry(7, b"a {} {}\x1eu4F7:<{} {}>2:i4i4"),
+                         {"id": 7, "fmt": "a {} {}", "args": ["u4", "F7:<{} {}>2:i4i4"]})
+        self.assertEqual(ds.catalog_entry(8, b"none\x1e"), {
+                         "id": 8, "fmt": "none", "args": []})
+        for text in (b"a {} {}\x1eu4F7:<{} {}>2:i4i4", b"none\x1e", "\u2103 {}\x1ek3:\u2103".encode("utf-8")):
+            with self.subTest(text=text):
+                self.assertEqual(ds.entry_text(
+                    ds.catalog_entry(1, text)), text)
+        with self.assertRaises(ex.Error):
+            ds.catalog_entry(1, b"x {}\x1eu3")
+
+    def test_a_string_without_descriptors_is_refused(self):
+        # every cataloged string is remote_fmt::described<Args...>(fmt): one without 0x1e has no place in a catalog
+        with self.assertRaisesRegex(ex.Error, "has no descriptors"):
+            ds.catalog_entry(9, b"plain")
+
+    def test_a_string_without_references(self):
+        self.assertEqual(ex.type_refs(b"plain {}\x1eu4"), [])
+
+    def test_the_key_is_fnv1a_64(self):
+        self.assertEqual(ex.fnv1a64(b""), 0xcbf29ce484222325)
+        self.assertEqual(ex.type_key(b"a"), "af63dc4c8601ec8c")
+
+    def test_two_texts_on_one_key_fail(self):
+        elf = (False, {1: 0}, [("_ZZN10remote_fmt6detail7typeTagIN2sc14StringConstantIJLc97EEEEEvvE19REMOTE_FMT_TYPE_TAG", 0, 1),
+                               ("_ZZN10remote_fmt6detail7typeTagIN2sc14StringConstantIJLc98EEEEEvvE19REMOTE_FMT_TYPE_TAG", 0, 1)])
+        with unittest.mock.patch.object(ex, "type_key", lambda text: "0" * 16):
+            with self.assertRaisesRegex(ex.Error, "share the key"):
+                ex.types_of(elf)
+
+    def test_missing_entries_inside_entries(self):
+        self.assertEqual(ex.missing_types(
+            [], {"a" * 16: b"O#" + b"b" * 16}), [(f"type {'a' * 16}", "b" * 16)])
 
 
 class AbbreviateTests(unittest.TestCase):
@@ -284,15 +358,15 @@ class DemangleTests(unittest.TestCase):
 
     @unittest.skipUnless(len(DEMANGLERS) == 2, "needs llvm-cxxfilt and c++filt")
     def test_the_other_demangler_reads_what_the_first_cannot(self):
-        # a generic lambda in main (`$_7`, Omniscope): llvm-cxxfilt reads no `T_` in a member
+        # a generic lambda in main (`$_7`): llvm-cxxfilt reads no `T_` in a member
         # template of a local class; f<1>() with clang's `TnDa`: GNU c++filt reads no `Tn`
-        names = [site("Z4mainENK3$_7clIN9Omniscope11SetMetaDataEEEDaRKT_", "x"),
+        names = [site("Z4mainENK3$_7clIN9Telemetry11SetMetaDataEEEDaRKT_", "x"),
                  site("1fITnDaLi1EEvv", "y")]
         for tool in DEMANGLERS:
             with self.subTest(tool=tool):
                 self.assertEqual(ex.demangle_sites(names, shutil.which(tool)), [
-                    ("auto main::lambda_7::operator()<Omniscope::SetMetaData>"
-                     "(Omniscope::SetMetaData const&) const", b"x"),
+                    ("auto main::lambda_7::operator()<Telemetry::SetMetaData>"
+                     "(Telemetry::SetMetaData const&) const", b"x"),
                     ("void f<1>()", b"y")])
 
     @unittest.skipUnless(len(DEMANGLERS) == 2, "needs llvm-cxxfilt and c++filt")
@@ -351,20 +425,32 @@ def compilers():
 @unittest.skipUnless(compilers() and os.environ.get("RF_TEST_INCLUDES"),
                      "needs arm-none-eabi-g++ and RF_TEST_INCLUDES")
 class ImageTests(unittest.TestCase):
+    # site strings as remote_fmt::described makes them (the format string, 0x1e, descriptors); one site names a type
+    # entry by its key, and the image holds that entry's tag (descriptor.hpp)
     SOURCE = r'''
 #include "remote_fmt/catalog.hpp"
+#include "remote_fmt/descriptor.hpp"
 #include "string_constant/string_constant.hpp"
 using namespace sc::literals;
 volatile unsigned sink;
-namespace { void local() { auto s = REMOTE_FMT_SITE(); sink = s("in local {} ℃"_sc); }
-void longLine() { auto s = REMOTE_FMT_SITE(); sink = s(LONG_LINE); } }
-template<typename T> struct Box { static void get() { auto s = REMOTE_FMT_SITE(); sink = s("box"_sc); } };
-template<typename S> struct Named { static void get() { auto s = REMOTE_FMT_SITE(); sink = s("named"_sc); } };
+using Entry = decltype("Eu12:1,1:a2,4:b{}c"_sc);
+namespace { void local() { auto s = REMOTE_FMT_SITE(); sink = s("in local {} ℃\x1eu4"_sc); }
+void longLine() { auto s = REMOTE_FMT_SITE(); sink = s(LONG_LINE + "\x1e"_sc); } }
+template<typename T> struct Box { static void get() { auto s = REMOTE_FMT_SITE(); sink = s("box\x1e"_sc); } };
+template<typename S> struct Named { static void get() { auto s = REMOTE_FMT_SITE(); sink = s("named\x1e"_sc); } };
+void typed() {
+    auto s = REMOTE_FMT_SITE();
+    sink = s("t {:#x}\x1e"_sc + remote_fmt::desc::typeKey<Entry>());
+    remote_fmt::detail::typeTag<Entry>();
+}
 extern "C" [[noreturn]] void Reset_Handler() {
-    local(); longLine(); Box<int>::get(); Box<char>::get(); Named<decltype("x"_sc)>::get();
+    local(); longLine(); Box<int>::get(); Box<char>::get(); Named<decltype("x"_sc)>::get(); typed();
     while(true) {}
 }
 '''
+    ENTRY = b"Eu12:1,1:a2,4:b{}c"
+    STRINGS = sorted([b"box\x1e", b"box\x1e", "in local {} ℃\x1eu4".encode(), LONG_LINE.encode() + b"\x1e",
+                      b"named\x1e", b"t {:#x}\x1e#" + ex.type_key(ENTRY).encode()])
     SCRIPT = """MEMORY { FLASH (rx) : ORIGIN = 0x0, LENGTH = 64K  RAM (rwx) : ORIGIN = 0x20000000, LENGTH = 16K }
 ENTRY(Reset_Handler)
 SECTIONS {
@@ -401,17 +487,18 @@ SECTIONS {
             with self.subTest(compiler=name, lto=lto, demangler=tool), \
                     tempfile.TemporaryDirectory() as directory:
                 image = self.build(directory, True, lto, compiler)
-                strings, sites = ex.sites_of(image, shutil.which(tool))
-                self.assertEqual(sorted(strings.values()),
-                                 sorted([b"box", b"box", "in local {} ℃".encode(),
-                                         LONG_LINE.encode(), b"named"]))
-                self.assertEqual(len(set(strings)), 5, "every site its own id")
+                strings, sites = ex.sites_of(
+                    ex.read_symbols(image), shutil.which(tool))
+                self.assertEqual(sorted(strings.values()), self.STRINGS)
+                self.assertEqual(len(set(strings)), 6, "every site its own id")
                 self.assertTrue(all(0x8000 <= i < 0x10000 for i in strings))
                 self.assertEqual(sorted(sites.values()),
                                  ["(anonymous namespace)::local()",
                                   "(anonymous namespace)::longLine()", "Box<char>::get()",
                                   "Box<int>::get()",
-                                  "Named<sc::StringConstant<(char)120>>::get()"])
+                                  "Named<sc::StringConstant<(char)120>>::get()", "typed()"])
+                self.assertEqual(ex.types_of(ex.read_symbols(image)), {
+                                 ex.type_key(self.ENTRY): self.ENTRY}, "the type entry")
 
     @unittest.skipUnless(shutil.which("clang++") and shutil.which("ld.lld"), "needs clang++ and ld.lld")
     def test_a_32_bit_image_of_another_machine(self):
@@ -419,46 +506,152 @@ SECTIONS {
         riscv = ["clang++", "--target=riscv32-unknown-elf", "-march=rv32imac", "-mabi=ilp32",
                  "-nostdinc++", "-nostdinc", *gcc_system_includes(), "-fuse-ld=lld"]
         with tempfile.TemporaryDirectory() as directory:
-            strings, sites = ex.sites_of(self.build(directory, True, [], riscv),
-                                         ex.find_demangler())
-        self.assertEqual(sorted(strings.values()),
-                         sorted([b"box", b"box", "in local {} ℃".encode(), LONG_LINE.encode(),
-                                 b"named"]))
+            strings, sites = ex.sites_of(ex.read_symbols(
+                self.build(directory, True, [], riscv)), ex.find_demangler())
+        self.assertEqual(sorted(strings.values()), self.STRINGS)
         self.assertTrue(all(0x8000 <= i < 0x10000 for i in strings))
 
     def test_a_catalog_in_the_image_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             image = self.build(directory, False, [])
             with self.assertRaisesRegex(ex.Error, "part of the image"):
-                ex.sites_of(image, ex.find_demangler())
+                ex.sites_of(ex.read_symbols(image), ex.find_demangler())
+
+    # as the generator writes it
+    PRELINK = {"StringConstants": [{"id": 5, "fmt": "a string", "args": []}]}
+
+    def run_main(self, directory, prelink):
+        """main() on the image built in `directory` with `prelink` as --strings: (exit code, the catalog's path)."""
+        strings = os.path.join(directory, "c.prelink.json")
+        with open(strings, "w") as f:
+            json.dump(prelink, f, indent=2)
+        out = os.path.join(directory, "c.json")
+        return ex.main(["--elf", os.path.join(directory, "t.elf"), "--strings", strings, "--json", out]), out
 
     def test_main_writes_the_json(self):
         with tempfile.TemporaryDirectory() as directory:
             self.build(directory, True, [])
-            out = os.path.join(directory, "c.json")
-            with open(out, "w") as f:   # as the generator writes it
-                json.dump({"StringConstants": [[5, "a string"]]}, f)
-            self.assertEqual(
-                ex.main(["--elf", os.path.join(directory, "t.elf"), "--json", out]), 0)
+            code, out = self.run_main(directory, self.PRELINK)
+            self.assertEqual(code, 0)
             with open(out) as f:
                 data = json.load(f)
-            texts = {text for _, text in data["StringConstants"]}
+            self.assertEqual(list(data), [
+                             "StringConstants", "Sites", "FrameCheck", "Types"], "the catalog's order")
+            texts = {ds.entry_text(entry).decode()
+                     for entry in data["StringConstants"]}
+            self.assertTrue(all(isinstance(arg, str) for entry in data["StringConstants"]
+                                for arg in entry["args"]))
             with open(out, encoding="utf-8") as f:
                 self.assertIn(
                     "℃", f.read(), "written as UTF-8, not \\u escapes")
-            self.assertEqual(
-                texts, {"a string", "box", "in local {} ℃", LONG_LINE, "named"})
-            self.assertEqual(len(data["Sites"]), 5)
+            self.assertEqual(texts, {"a string\x1e"} | {
+                             t.decode() for t in self.STRINGS})
+            self.assertEqual(len(data["Sites"]), 6)
+            self.assertEqual(data["Types"], {ex.type_key(
+                self.ENTRY): self.ENTRY.decode()})
+            with open(os.path.join(directory, "c.prelink.json")) as f:
+                self.assertEqual(json.load(f), self.PRELINK,
+                                 "the generator's file is only read")
+
+    def test_a_failing_step_leaves_the_previous_catalog(self):
+        # a reader keeps the last complete catalog: nothing is written unless everything is known
+        with tempfile.TemporaryDirectory() as directory:
+            self.build(directory, True, [])
+            out = os.path.join(directory, "c.json")
+            with open(out, "w") as f:
+                f.write("the previous catalog")
+            unresolved = {"StringConstants": [
+                {"id": 5, "fmt": "x {}", "args": ["#00000000000000aa"]}]}
+            with unittest.mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+                code, _ = self.run_main(directory, unresolved)
+            self.assertEqual(code, 1)
+            self.assertIn("without an entry", err.getvalue())
+            with open(out) as f:
+                self.assertEqual(f.read(), "the previous catalog")
+            self.assertEqual(sorted(os.listdir(directory)), [
+                             "c.json", "c.prelink.json", "t.cpp", "t.elf", "t.ld"])
+
+    def test_a_reference_without_its_entry_fails_the_link_step(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image = self.build(directory, True, [])
+            strings, sites = ex.sites_of(
+                ex.read_symbols(image), ex.find_demangler())
+            with self.assertRaisesRegex(ex.Error, "without an entry"):
+                ex.catalog({"StringConstants": []}, strings, sites, types={})
+            # the generator's strings are checked too
+            prelink = {"StringConstants": [
+                {"id": 5, "fmt": "x {}", "args": ["#00000000000000aa"]}]}
+            with self.assertRaisesRegex(ex.Error, "first #00000000000000aa in string 5"):
+                ex.catalog(prelink, strings, sites,
+                           types=ex.types_of(ex.read_symbols(image)))
 
     def test_a_site_on_a_string_id_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             image = self.build(directory, True, [])
-            strings, sites = ex.sites_of(image, ex.find_demangler())
-            out = os.path.join(directory, "c.json")
-            with open(out, "w") as f:
-                json.dump({"StringConstants": [[min(strings), "taken"]]}, f)
+            strings, sites = ex.sites_of(
+                ex.read_symbols(image), ex.find_demangler())
             with self.assertRaisesRegex(ex.Error, "a string's id too"):
-                ex.merge(out, strings, sites)
+                ex.catalog({"StringConstants": [
+                           {"id": min(strings), "fmt": "taken", "args": []}]}, strings, sites)
+
+    def build_config(self, directory, values, switch="REMOTE_FMT_USE_ENCHANTUM"):
+        """An image of one TU per value of a config.hpp switch, each including config.hpp."""
+        compiler = compilers()[0][1]
+        script = os.path.join(directory, "t.ld")
+        elf = os.path.join(directory, "t.elf")
+        with open(script, "w") as f:
+            f.write(self.SCRIPT % self.CATALOG)
+        sources = []
+        for n, value in enumerate(values):
+            source = os.path.join(directory, f"c{n}.cpp")
+            with open(source, "w") as f:
+                f.write(f'#define {switch} {value}\n#include "remote_fmt/config.hpp"\n'
+                        f'int tu{n}() {{ return {n}; }}\n')
+                if n == 0:
+                    f.write(
+                        'extern "C" [[noreturn]] void Reset_Handler() { while(true) {} }\n')
+            sources.append(source)
+        includes = [
+            f"-I{p}" for p in os.environ["RF_TEST_INCLUDES"].split(":")]
+        subprocess.run([*compiler, "-std=c++26", "-O2", "-nostdlib", "-fno-exceptions", "-ffunction-sections",
+                        "-fdata-sections", "-Wl,--gc-sections", f"-Wl,-T,{script}", *
+                        includes, "-o", elf,
+                        *sources], check=True, capture_output=True, text=True)
+        with open(elf, "rb") as f:
+            return f.read()
+
+    def test_one_value_per_switch_passes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(ex.config_conflicts(
+                ex.read_symbols(self.build_config(directory, [1, 1]))), {})
+
+    def test_tus_that_disagree_fail_the_link_step(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(ex.config_conflicts(ex.read_symbols(self.build_config(directory, [0, 1]))),
+                             {"USE_ENCHANTUM": [0, 1]})
+            with unittest.mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+                self.assertEqual(self.run_main(
+                    directory, {"StringConstants": []})[0], 1)
+            self.assertIn("disagree on REMOTE_FMT_USE_ENCHANTUM",
+                          err.getvalue())
+            self.assertFalse(os.path.exists(os.path.join(
+                directory, "c.json")), "no catalog written")
+
+    def test_the_encoder_knobs_have_markers(self):
+        """A mixed FRAME_CHECK fails the link step (before, the catalog said "FrameCheck": true and the unchecked TU's
+        frames were refused as another image's); one value is the catalog's FrameCheck."""
+        for switch, values, seen in (("FRAME_CHECK", [0, 1], [0, 1]), ("STAGING_BYTES", [0, 32], [0, 32]),
+                                     ("USE_CATALOG", ["false", "true"], [0, 1])):
+            with self.subTest(switch=switch), tempfile.TemporaryDirectory() as directory:
+                elf = ex.read_symbols(self.build_config(
+                    directory, values, f"REMOTE_FMT_{switch}"))
+                self.assertEqual(ex.config_conflicts(elf), {switch: seen})
+        for value, checked in ((0, False), (1, True)):
+            with tempfile.TemporaryDirectory() as directory:
+                elf = ex.read_symbols(self.build_config(
+                    directory, [value, value], "REMOTE_FMT_FRAME_CHECK"))
+                self.assertEqual(ex.config_conflicts(elf), {})
+                self.assertEqual(ex.frame_check_of(elf), checked)
 
 
 if __name__ == "__main__":
