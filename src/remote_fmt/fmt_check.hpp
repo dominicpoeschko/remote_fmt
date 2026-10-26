@@ -327,7 +327,7 @@ namespace remote_fmt { namespace detail {
 #else
 
 // Defined either way, so dependent code can test it without testing REMOTE_FMT_USE_FMT_CHECK first.
-    #if !defined(REMOTE_FMT_FMT_CHECK_FULL)
+    #ifndef REMOTE_FMT_FMT_CHECK_FULL
         #define REMOTE_FMT_FMT_CHECK_FULL 0
     #endif
 
