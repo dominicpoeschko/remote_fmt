@@ -1,7 +1,7 @@
 #pragma once
 
 // What a formatter declares and what it writes through: the formatter template, the descriptor of an argument type
-// (descriptorOf, described, typeDescriptor/typeEntry, subFormatDescriptor; descriptor.hpp's grammar) and
+// (descriptorOf, described, typeDescriptor, subFormatDescriptor; descriptor.hpp's grammar) and
 // detail::Access, the way of remote_fmt's own formatters into the Printer's raw fields.
 
 #include "check.hpp"
@@ -39,20 +39,17 @@ consteval auto described(sc::StringConstant<Chars...> fmt) {
 }
 
 // A type entry (enums, registers, reflected structs): with a catalog the descriptor is the entry's key and the text
-// travels once per image (detail::typeTag); without one the text is inline. The formatter calls typeEntry<Text>() in
-// its format (which every image that sends the type instantiates) and returns typeDescriptor<Text>().
+// travels once per image (detail::REMOTE_FMT_TYPE_TAG, which this names: every site whose descriptor holds the key
+// brings the entry along); without one the text is inline. The formatter's descriptor() returns
+// typeDescriptor<Text>().
 template<typename Text>
 consteval auto typeDescriptor() {
     if constexpr(useCatalog) {
+        static_cast<void>(&detail::REMOTE_FMT_TYPE_TAG<Text>);
         return desc::typeKey<Text>();
     } else {
         return Text{};
     }
-}
-
-template<typename Text>
-[[gnu::always_inline]] inline void typeEntry() {
-    if constexpr(useCatalog) { detail::typeTag<Text>(); }
 }
 
 // `F<n>:<fmt><k>:<D>...`: a sub format string whose arguments' descriptors are static - the format string never

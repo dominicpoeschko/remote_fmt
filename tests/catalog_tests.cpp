@@ -35,7 +35,7 @@ static constexpr auto fmtString{"Test {}"_sc};
 static constexpr auto argString{"hello"_sc};
 
 // A bitflag enum. test_roundtrip covers the rendering, but it builds with the catalog OFF, where the names are inline;
-// here they are a type entry of the catalog (detail::typeTag, extract_sites.py "Types"), the site's descriptor has its
+// here they are a type entry of the catalog (detail::REMOTE_FMT_TYPE_TAG, extract_sites.py "Types"), the site's descriptor has its
 // key, and the reader has to resolve it before the names can be joined into "read|write".
 enum struct [[clang::flag_enum]] Perm : std::uint8_t { read = 1 << 0, write = 1 << 1 };
 

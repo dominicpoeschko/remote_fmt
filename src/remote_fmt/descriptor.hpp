@@ -157,11 +157,12 @@ namespace remote_fmt { namespace desc {
 }}   // namespace remote_fmt::desc
 
 namespace remote_fmt { namespace detail {
-    // One tag per type entry: its symbol names the entry's text (`typeTag<sc::StringConstant<...>>()::
-    // REMOTE_FMT_TYPE_TAG`), in a section that is not loaded on a target (the linker script's `remote_fmt_sites`
-    // KEEP). A comdat function, so one per image whatever the number of TUs and Printers that write the type.
+    // One tag per type entry: its symbol names the entry's text (`REMOTE_FMT_TYPE_TAG<sc::StringConstant<...>>`), in
+    // a section that is not loaded on a target (the linker script's `remote_fmt_sites` KEEP). A comdat variable, so one
+    // per image whatever the number of TUs and Printers that write the type. A variable template, not a static local:
+    // naming it in a consteval function (typeDescriptor) instantiates it, a function's static only comes with code that
+    // is emitted - and gcc emits the site tags of a function it never emits, so the entry has to come with the
+    // descriptor; `used` also keeps gcc's LTO from dropping the section of an inline variable.
     template<typename Text>
-    [[gnu::always_inline]] inline void typeTag() {
-        [[gnu::used, gnu::section("remote_fmt_sites.types")]] static char REMOTE_FMT_TYPE_TAG{};
-    }
+    [[gnu::used, gnu::section("remote_fmt_sites.types")]] inline char REMOTE_FMT_TYPE_TAG{};
 }}   // namespace remote_fmt::detail

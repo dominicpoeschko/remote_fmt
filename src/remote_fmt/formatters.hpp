@@ -217,9 +217,6 @@ public:
     template<typename Printer>
     constexpr void format(T const& value,
                           Printer& printer) const {
-#if REMOTE_FMT_USE_ENCHANTUM
-        if constexpr(named) { typeEntry<Text<T>>(); }
-#endif
         formatter<format_t>{}.format(static_cast<format_t>(value), printer);
     }
 };

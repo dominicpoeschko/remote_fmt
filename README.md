@@ -218,7 +218,7 @@ start | id (2 bytes, little endian) | the values | [CRC-8] | 0xAA
 Free text is always counted (`<n>:<text>`). An enumerator's `<v>` is decimal, `-` before a negative one (an unsigned
 one up to 2^64 - 1, a signed one down to -2^63). Enums, registers, Flags and reflected structs are **type entries**: with
 a catalog a site's descriptor holds `#<FNV-1a 64 of the text>`, the text travels once per image in the name of a tag
-(`remote_fmt::detail::typeTag<Text>()`, section `remote_fmt_sites.types`), `tools/extract_sites.py` writes them to
+(`remote_fmt::detail::REMOTE_FMT_TYPE_TAG<Text>`, section `remote_fmt_sites.types`), `tools/extract_sites.py` writes them to
 `"Types"` (failing the link on a key two texts share or a reference without an entry) and the catalog reader puts the
 text back in place. Without a catalog the text is inline.
 
@@ -294,7 +294,7 @@ A `remote_fmt::formatter<T>` writes through the printer's public vocabulary, nev
 * **declare a descriptor** - `static consteval auto descriptor()` - and write exactly the values it names with
   `printer.value(x)` / `printer.formatArguments(xs...)`: `remote_fmt::descriptorOf<U>()` for "the same as U",
   `remote_fmt::subFormatDescriptor<Args...>(fmt)` for a fixed sub format string whose arguments alone travel,
-  `remote_fmt::typeDescriptor<Text>()` (with `remote_fmt::typeEntry<Text>()` in `format`) for a type entry.
+  `remote_fmt::typeDescriptor<Text>()` for a type entry (it brings the entry's tag along).
 
 The descriptor and the bytes `format` writes are two descriptions of one truth that the CRC does not cross-check (it
 covers the bytes that were sent): keep them next to each other, and give a new formatter a round trip in the tests. The

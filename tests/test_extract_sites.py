@@ -167,8 +167,8 @@ class DescriptorTests(unittest.TestCase):
         self.assertEqual(ex.type_key(b"a"), "af63dc4c8601ec8c")
 
     def test_two_texts_on_one_key_fail(self):
-        elf = (False, {1: 0}, [("_ZZN10remote_fmt6detail7typeTagIN2sc14StringConstantIJLc97EEEEEvvE19REMOTE_FMT_TYPE_TAG", 0, 1),
-                               ("_ZZN10remote_fmt6detail7typeTagIN2sc14StringConstantIJLc98EEEEEvvE19REMOTE_FMT_TYPE_TAG", 0, 1)])
+        elf = (False, {1: 0}, [("_ZN10remote_fmt6detail19REMOTE_FMT_TYPE_TAGIN2sc14StringConstantIJLc97EEEEEE", 0, 1),
+                               ("_ZN10remote_fmt6detail19REMOTE_FMT_TYPE_TAGIN2sc14StringConstantIJLc98EEEEEE", 0, 1)])
         with unittest.mock.patch.object(ex, "type_key", lambda text: "0" * 16):
             with self.assertRaisesRegex(ex.Error, "share the key"):
                 ex.types_of(elf)
@@ -441,7 +441,7 @@ template<typename S> struct Named { static void get() { auto s = REMOTE_FMT_SITE
 void typed() {
     auto s = REMOTE_FMT_SITE();
     sink = s("t {:#x}\x1e"_sc + remote_fmt::desc::typeKey<Entry>());
-    remote_fmt::detail::typeTag<Entry>();
+    sink = remote_fmt::detail::REMOTE_FMT_TYPE_TAG<Entry>;
 }
 extern "C" [[noreturn]] void Reset_Handler() {
     local(); longLine(); Box<int>::get(); Box<char>::get(); Named<decltype("x"_sc)>::get(); typed();
@@ -584,6 +584,28 @@ SECTIONS {
             with self.assertRaisesRegex(ex.Error, "first #00000000000000aa in string 5"):
                 ex.catalog(prelink, strings, sites,
                            types=ex.types_of(ex.read_symbols(image)))
+
+    # gcc emits the site tags of an inline function nobody calls, never its code: the type entry its descriptor names
+    # has to come with the descriptor (typeDescriptor's way, describe.hpp), not with the formatter's code
+    NEVER_CALLED = r'''
+template<typename Text>
+consteval auto keyOf() {
+    static_cast<void>(&remote_fmt::detail::REMOTE_FMT_TYPE_TAG<Text>);
+    return remote_fmt::desc::typeKey<Text>();
+}
+inline void neverCalled() { auto s = REMOTE_FMT_SITE(); sink = s("n {}\x1e"_sc + keyOf<decltype("Eu11:0,5:never"_sc)>()); }
+'''
+
+    def test_a_site_of_a_function_never_called_has_its_entry(self):
+        for (name, compiler), lto in [(c, lto) for c in compilers() for lto in ([], ["-flto"])]:
+            with self.subTest(compiler=name, lto=lto), tempfile.TemporaryDirectory() as directory, \
+                    unittest.mock.patch.object(self, "SOURCE", self.SOURCE.replace(
+                        "extern \"C\"", self.NEVER_CALLED + "extern \"C\"")):
+                elf = ex.read_symbols(self.build(
+                    directory, True, lto, compiler))
+                strings, sites = ex.sites_of(elf, ex.find_demangler())
+                ex.catalog({"StringConstants": []}, strings,
+                           sites, types=ex.types_of(elf))
 
     def test_a_site_on_a_string_id_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:

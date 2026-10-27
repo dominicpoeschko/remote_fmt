@@ -3,7 +3,7 @@
 before the link (`--strings`, its `<target>_string_constants.prelink.json`), then the image's call sites
 (REMOTE_FMT_SITE, src/remote_fmt/catalog.hpp): each site's `{"id", "fmt", "args"}` entry (descriptor.py
 catalog_entry) to "StringConstants" and its function's signature to "Sites": {"<id>": "<signature>"};
-"FrameCheck"; the image's type entries (remote_fmt::detail::typeTag, descriptor.hpp) to "Types":
+"FrameCheck"; the image's type entries (remote_fmt::detail::REMOTE_FMT_TYPE_TAG, descriptor.hpp) to "Types":
 {"<16 hex>": descriptor}. A site's string is `fmt 0x1e descriptors`, split into one descriptor per
 argument; the link fails on a site without descriptors, a descriptor that does not split, a type key
 that two texts share, a type reference without its entry and a site at 0xFFFF (the inline id). The
@@ -480,8 +480,8 @@ def catalog(prelink, strings, sites, frame_check=False, types=None):
     missing = missing_types(everything, types)
     if missing:
         where, key = missing[0]
-        raise Error(f"{len(missing)} type reference(s) without an entry, first #{key} in {where}: a formatter that "
-                    f"returns typeDescriptor<T>() must call typeEntry<T>() in its format()")
+        raise Error(f"{len(missing)} type reference(s) without an entry, first #{key} in {where}: a type key "
+                    f"made without typeDescriptor<T>() (which brings the entry's tag)")
     return {
         "StringConstants": entries,
         "Sites": {str(site_id): sites[site_id] for site_id in sorted(sites)},
