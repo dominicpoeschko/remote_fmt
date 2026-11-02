@@ -61,7 +61,7 @@ REMOTE_FMT_DETAIL_FMT_WALL_BEGIN
     #endif
 REMOTE_FMT_DETAIL_FMT_WALL_END
 
-namespace remote_fmt { namespace detail {
+namespace remote_fmt { namespace Detail {
 
     // For an argument whose fmt formatter is unreachable here (see degradesToUnchecked). Swallows
     // any spec, so it holds its place in the field sequence and the rest stay checked.
@@ -205,23 +205,23 @@ namespace remote_fmt { namespace detail {
           underlying>;
     };
 
-}}   // namespace remote_fmt::detail
+}}   // namespace remote_fmt::Detail
 
 template<>
-struct fmt::formatter<remote_fmt::detail::UncheckedArg> {
+struct fmt::formatter<remote_fmt::Detail::UncheckedArg> {
     // Accepts any spec. std::ranges::find because incrementing fmt's raw pointer by hand trips
     // -Wunsafe-buffer-usage.
     static constexpr auto parse(fmt::parse_context<char>& ctx) -> char const* {
         return std::ranges::find(ctx.begin(), ctx.end(), '}');
     }
 
-    static auto format(remote_fmt::detail::UncheckedArg,
+    static auto format(remote_fmt::Detail::UncheckedArg,
                        fmt::format_context& ctx) {
         return ctx.out();
     }
 };
 
-namespace remote_fmt { namespace detail {
+namespace remote_fmt { namespace Detail {
 
     // Without REMOTE_FMT_FMT_CHECK_FULL fmt cannot format these, so their spec stays unchecked.
     template<typename T>
@@ -322,7 +322,7 @@ namespace remote_fmt { namespace detail {
         }
     }
 
-}}   // namespace remote_fmt::detail
+}}   // namespace remote_fmt::Detail
 
 #else
 
@@ -331,10 +331,10 @@ namespace remote_fmt { namespace detail {
         #define REMOTE_FMT_FMT_CHECK_FULL 0
     #endif
 
-namespace remote_fmt { namespace detail {
+namespace remote_fmt { namespace Detail {
     template<typename... Args,
              char... Chars>
     consteval void checkFormatStringWithFmt(sc::StringConstant<Chars...>) {}
-}}   // namespace remote_fmt::detail
+}}   // namespace remote_fmt::Detail
 
 #endif

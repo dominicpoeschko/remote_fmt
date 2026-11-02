@@ -22,19 +22,19 @@
 
 namespace {
 
-constexpr std::array<char, 5> Alphabet{'{', '}', ':', '0', 'x'};
-constexpr std::size_t         MaxLength = 9;
+constexpr std::array<char, 5> alphabet{'{', '}', ':', '0', 'x'};
+constexpr std::size_t         maxLength = 9;
 
 // taken while the old functions and the scanner agreed on every string
-constexpr std::uint64_t ExpectedDigest  = 0xfbffd2f0c2193dffULL;
-constexpr std::size_t   ExpectedStrings = 2441406;
+constexpr std::uint64_t expectedDigest  = 0xfbffd2f0c2193dffULL;
+constexpr std::size_t   expectedStrings = 2441406;
 
 // target: '-' (refused: "invalid replacement field count") or the field count, then 'p' (plain) or
 // 'i' ("argument id or dynamic spec in replacement field"). parser: 'S' (refused silently by the
 // pre-check), 'M' (malformed), 'D' (dynamic spec / number above the limit), or 'O', the text and the
 // fields. The parser is modelled with an argument for every field.
 std::string outcomeNew(std::string_view s) {
-    using namespace remote_fmt::detail;
+    using namespace remote_fmt::Detail;
     std::string out;
     auto const  shape = formatShape(s);
     if(!shape.wellFormed) {
@@ -73,11 +73,11 @@ int main() {
     std::size_t   strings = 0;
     std::string   s;
 
-    for(std::size_t length = 0; length <= MaxLength; ++length) {
+    for(std::size_t length = 0; length <= maxLength; ++length) {
         std::vector<std::size_t> digits(length, 0);
         while(true) {
             s.clear();
-            for(auto const d : digits) { s += Alphabet[d]; }
+            for(auto const d : digits) { s += alphabet[d]; }
             ++strings;
 
             auto const now = outcomeNew(s);
@@ -86,7 +86,7 @@ int main() {
             }
             std::size_t i = 0;
             for(; i < length; ++i) {
-                if(++digits[i] < Alphabet.size()) { break; }
+                if(++digits[i] < alphabet.size()) { break; }
                 digits[i] = 0;
             }
             if(i == length) { break; }
@@ -96,7 +96,7 @@ int main() {
     std::printf("%zu strings, digest 0x%016llx\n",
                 strings,
                 static_cast<unsigned long long>(digest));
-    bool const ok = strings == ExpectedStrings && digest == ExpectedDigest;
+    bool const ok = strings == expectedStrings && digest == expectedDigest;
     if(!ok) { std::puts("FAIL"); }
     return ok ? 0 : 1;
 }

@@ -23,8 +23,8 @@ namespace {
 
 using remote_fmt::ParseError;
 
-constexpr std::byte Start = remote_fmt::protocol::startMarker;   // an unchecked frame
-constexpr std::byte End   = remote_fmt::protocol::endMarker;
+constexpr std::byte frameStart = remote_fmt::protocol::startMarker;   // an unchecked frame
+constexpr std::byte frameEnd   = remote_fmt::protocol::endMarker;
 
 std::unordered_map<std::uint16_t,
                    std::string> const&
@@ -47,11 +47,11 @@ catalog() {
 std::vector<std::byte> stream() {
     std::vector<std::byte> out{std::byte{0x01}, std::byte{0x02}};
     auto const             huge = std::bit_cast<std::array<std::byte, 8>>(1e300);
-    out.insert(out.end(), {Start, std::byte{3}, std::byte{0}});
+    out.insert(out.end(), {frameStart, std::byte{3}, std::byte{0}});
     out.insert(out.end(), huge.begin(), huge.end());
-    out.push_back(End);
-    out.insert(out.end(), {Start, std::byte{4}, std::byte{0}, std::byte{5}, End});
-    out.insert(out.end(), {Start, std::byte{5}, std::byte{0}, std::byte{7}, End});
+    out.push_back(frameEnd);
+    out.insert(out.end(), {frameStart, std::byte{4}, std::byte{0}, std::byte{5}, frameEnd});
+    out.insert(out.end(), {frameStart, std::byte{5}, std::byte{0}, std::byte{7}, frameEnd});
     return out;
 }
 
@@ -73,7 +73,7 @@ void withKind() {
 }
 
 void unknownIdIsStream() {
-    std::vector<std::byte> const                    bytes{Start, std::byte{9}, std::byte{0}, End};
+    std::vector<std::byte> const bytes{frameStart, std::byte{9}, std::byte{0}, frameEnd};
     std::vector<std::pair<ParseError, std::string>> errors;
     auto const                                      parsed = remote_fmt::parseMessage(
       std::span<std::byte const>{bytes},

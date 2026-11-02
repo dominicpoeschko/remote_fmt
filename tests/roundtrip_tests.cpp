@@ -1003,7 +1003,7 @@ void enumeratorValues() {
 
     // the grammar alone, at the edges of both ranges (the same strings as test_descriptor_split.py's)
     auto const skips
-      = [](std::string_view d) { return remote_fmt::detail::grammar::skip(d) && d.empty(); };
+      = [](std::string_view d) { return remote_fmt::Detail::grammar::skip(d) && d.empty(); };
     CHECK(skips("Gu82:1,2:lo9223372036854775808,2:hi"), "a u64 bitflag's top bit");
     CHECK(skips("Eu81:18446744073709551615,3:max"), "the largest unsigned value");
     CHECK(!skips("Eu81:18446744073709551616,3:max"), "past 64 bits: malformed");
@@ -1122,7 +1122,7 @@ std::vector<std::byte> nestedFrame(char        kind,
 // Asserts the rejection, not the crash: a test that overflowed the stack would take the binary
 // down with it and report nothing.
 void nestingDepthLimit() {
-    constexpr auto Limit = remote_fmt::detail::Parser::maxNestingDepth;
+    constexpr auto limit = remote_fmt::Detail::Parser::maxNestingDepth;
 
     auto const parseNested = [](auto const& buffer, std::string& error) {
         auto const [message, remaining, discarded, catalogId]
@@ -1142,12 +1142,12 @@ void nestingDepthLimit() {
     // The boundary itself, from both sides.
     {
         std::string error;
-        auto const  message = parseNested(nestedFrame('L', Limit - 1), error);
+        auto const  message = parseNested(nestedFrame('L', limit - 1), error);
         CHECK(message.has_value(), "nesting one below the limit still parses");
     }
     {
         std::string error;
-        auto const  message = parseNested(nestedFrame('L', Limit), error);
+        auto const  message = parseNested(nestedFrame('L', limit), error);
         CHECK(!message, "nesting at the limit is refused");
         CHECK(!error.empty(), "nesting at the limit reports an error");
     }
@@ -1212,8 +1212,8 @@ void malformedFormatString() {
 // the wire reaches its error branches past the pre-check, but the parser's walk does not trust that
 // check, and this is the layer that decides whether a bad string is a rejected frame or an abort.
 void replacementFieldScanRejections() {
-    using remote_fmt::detail::nextField;
-    using remote_fmt::detail::ScanError;
+    using remote_fmt::Detail::nextField;
+    using remote_fmt::Detail::ScanError;
 
     // A trailing brace of either kind: neither an escape pair nor a field that can close.
     CHECK(nextField("{").malformed(), "trailing '{' reported malformed");
@@ -1252,7 +1252,7 @@ void replacementFieldScanRejections() {
     {
         auto const  none = nextField("{{}}");
         std::string text;
-        remote_fmt::detail::appendLiteral(text, none.literal);
+        remote_fmt::Detail::appendLiteral(text, none.literal);
         CHECK(!none.malformed() && none.field.empty() && text == "{}",
               "escapes alone yield no field");
     }
@@ -1282,7 +1282,7 @@ struct remote_fmt::formatter<Suppressed> {
 
 #if REMOTE_FMT_USE_FMT_CHECK
 template<>
-struct remote_fmt::detail::HostType<Suppressed> {
+struct remote_fmt::Detail::HostType<Suppressed> {
     using type = std::string_view;
 };
 #endif
@@ -1344,17 +1344,17 @@ struct remote_fmt::formatter<Either> {
 
 #if REMOTE_FMT_USE_FMT_CHECK
 template<>
-struct remote_fmt::detail::HostType<LoopPair> {
+struct remote_fmt::Detail::HostType<LoopPair> {
     using type = std::string_view;
 };
 
 template<>
-struct remote_fmt::detail::HostType<Label> {
+struct remote_fmt::Detail::HostType<Label> {
     using type = std::string_view;
 };
 
 template<>
-struct remote_fmt::detail::HostType<Either> {
+struct remote_fmt::Detail::HostType<Either> {
     using type = std::string_view;
 };
 #endif

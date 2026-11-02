@@ -36,7 +36,7 @@
 
 namespace remote_fmt {
 
-namespace detail {
+namespace Detail {
 
     struct FillAlignWidth {
         std::string padField;     ///< "{:*>10}" -- what pads the finished text, "{}" for nothing
@@ -1279,7 +1279,7 @@ namespace detail {
             return stringValue(field, joined, inList, "bitflag");
         }
     };
-}   // namespace detail
+}   // namespace Detail
 
 struct ParsedMessage {
     std::optional<std::string> message;
@@ -1375,25 +1375,25 @@ inline ParsedMessage parseMessage(std::span<std::byte const>             buffer,
         // what the parser says in the first walk is about the bytes; in the second, the frame is whole and checked,
         // so what it says there is about rendering its text
         ParseError     phase = ParseError::stream;
-        detail::Parser parser{
+        Detail::Parser parser{
           [&](std::string_view m) { sayParseError(errorMessagef, std::string{m}, phase); },
           &stringConstantsMap};
         // first walk: the frame's structure and its exact end, nothing rendered
-        detail::Input                                  in{buffer, 3};
+        Detail::Input                                  in{buffer, 3};
         bool                                           isInline{};
         auto const                                     text = parser.stringOf(id, in, isInline);
-        std::optional<detail::Parser::DescribedString> parts;
+        std::optional<Detail::Parser::DescribedString> parts;
         if(text) { parts = parser.split(*text, isInline); }
-        if(text && !parts) { parser.stop = detail::Parser::Stop::malformed; }
+        if(text && !parts) { parser.stop = Detail::Parser::Stop::malformed; }
         if(parts) {
             for(auto d : parts->descriptors) {
-                if(!parser.value(d, in, detail::defaultReplacementField, false, false)) { break; }
+                if(!parser.value(d, in, Detail::defaultReplacementField, false, false)) { break; }
             }
         }
-        if(parser.stop == detail::Parser::Stop::shortData) {
+        if(parser.stop == Detail::Parser::Stop::shortData) {
             return {std::nullopt, buffer, unparsedBytes, {}};
         }
-        if(parser.stop != detail::Parser::Stop::none) {
+        if(parser.stop != Detail::Parser::Stop::none) {
             skipOne();
             continue;
         }
@@ -1426,9 +1426,9 @@ inline ParsedMessage parseMessage(std::span<std::byte const>             buffer,
 
         // second walk: the text
         parser.render = true;
-        parser.stop   = detail::Parser::Stop::none;
+        parser.stop   = Detail::Parser::Stop::none;
         phase         = ParseError::format;
-        detail::Input second{buffer.first(end), 3};
+        Detail::Input second{buffer.first(end), 3};
         auto const    again    = parser.stringOf(id, second, isInline);
         auto const    rendered = again && parts
                                  ? parser.described(parts->fmtString, parts->descriptors, second)

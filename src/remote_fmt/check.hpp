@@ -20,7 +20,7 @@ inline constexpr bool useCatalog = true;
 inline constexpr bool useCatalog{REMOTE_FMT_USE_CATALOG};
 #endif
 
-namespace detail {
+namespace Detail {
 
     // never defined: the call fails constant evaluation, turning a failed assert into a compile error
     void compileTimeAssertFailed(char const* message);
@@ -30,26 +30,26 @@ namespace detail {
                                      bool predicate) {
         if(!predicate) { compileTimeAssertFailed(str); }
     }
-}   // namespace detail
+}   // namespace Detail
 
 template<typename... Args,
          char... Chars>
 consteval void checkFormatString(sc::StringConstant<Chars...>) {
     auto constexpr stringView = std::string_view{sc::StringConstant<Chars...>{}};
-    detail::compileTimeAssert("invalid chars in format",
-                              useCatalog ? detail::allCharsValidCataloged(stringView)
-                                         : detail::allCharsValid(stringView));
+    Detail::compileTimeAssert("invalid chars in format",
+                              useCatalog ? Detail::allCharsValidCataloged(stringView)
+                                         : Detail::allCharsValid(stringView));
     // one walk of the grammar the parser uses (format_grammar.hpp)
-    auto constexpr shape = detail::formatShape(stringView);
-    detail::compileTimeAssert("invalid replacement field count",
+    auto constexpr shape = Detail::formatShape(stringView);
+    Detail::compileTimeAssert("invalid replacement field count",
                               shape.wellFormed && shape.fields == sizeof...(Args));
     // One argument per field, in order, and no argument index on the wire - so an index above 0
     // makes the host report "argument not found" and drop the whole line. fmt accepts "{1} {0}",
     // so its checker does not catch this. A nested brace is refused too: a dynamic width needs a
     // second argument the protocol cannot send.
-    detail::compileTimeAssert("argument id or dynamic spec in replacement field",
+    Detail::compileTimeAssert("argument id or dynamic spec in replacement field",
                               shape.plainFields);
-    detail::checkFormatStringWithFmt<Args...>(sc::StringConstant<Chars...>{});
+    Detail::checkFormatStringWithFmt<Args...>(sc::StringConstant<Chars...>{});
 }
 
 }   // namespace remote_fmt

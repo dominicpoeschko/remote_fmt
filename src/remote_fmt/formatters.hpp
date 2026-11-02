@@ -56,9 +56,9 @@ struct formatter<T> {
     constexpr void format(T const& value,
                           Printer& printer) const {
         if constexpr(sizeof(T) == 4) {
-            detail::Access::varint(printer, value);
+            Detail::Access::varint(printer, value);
         } else {
-            detail::Access::printHelper(printer, value);
+            Detail::Access::printHelper(printer, value);
         }
     }
 };
@@ -75,7 +75,7 @@ struct formatter<T> {
     template<typename Printer>
     constexpr void format(T const& value,
                           Printer& printer) const {
-        detail::Access::printHelper(printer, value);
+        Detail::Access::printHelper(printer, value);
     }
 };
 
@@ -91,7 +91,7 @@ struct formatter<T> {
     template<typename Printer>
     constexpr void format(T        value,
                           Printer& printer) const {
-        detail::Access::printHelper(printer,
+        Detail::Access::printHelper(printer,
                                     std::bit_cast<std::uintptr_t>(static_cast<void const*>(value)));
     }
 };
@@ -138,11 +138,11 @@ struct formatter<std::byte> {
     template<typename Printer>
     constexpr void format(std::byte const& value,
                           Printer&         printer) const {
-        detail::Access::printHelper(printer, value);
+        Detail::Access::printHelper(printer, value);
     }
 };
 
-template<detail::IsStringLike T>
+template<Detail::IsStringLike T>
 struct formatter<T> {
     static consteval auto descriptor() { return sc::StringConstant<'s'>{}; }
 
@@ -150,8 +150,8 @@ struct formatter<T> {
     constexpr void format(T const& value,
                           Printer& printer) const {
         std::string_view const stringView{value};
-        detail::Access::varint(printer, stringView.size());
-        detail::Access::lowprint(printer, stringView);
+        Detail::Access::varint(printer, stringView.size());
+        Detail::Access::lowprint(printer, stringView);
     }
 };
 
@@ -196,7 +196,7 @@ private:
 
     // only where there are names: enchantum's tables of an enum without enumerators are no constants on gcc
     template<typename E>
-    using Text = decltype(desc::built<detail::EnumText<E, decltype(descriptorOf<format_t>())>>());
+    using Text = decltype(desc::built<Detail::EnumText<E, decltype(descriptorOf<format_t>())>>());
 #else
     static constexpr bool named = false;
 #endif
@@ -221,7 +221,7 @@ public:
     }
 };
 
-template<detail::IsRangeButNotStringLike T>
+template<Detail::IsRangeButNotStringLike T>
 struct formatter<T> {
 private:
     using value_t = std::ranges::range_value_t<T>;
@@ -236,9 +236,9 @@ private:
     static constexpr void formatImpl(R&          range,
                                      std::size_t size,
                                      Printer&    printer) {
-        detail::Access::varint(printer, size);
+        Detail::Access::varint(printer, size);
         if constexpr(raw) {
-            detail::Access::lowprint(printer, std::span{range});
+            Detail::Access::lowprint(printer, std::span{range});
         } else {
             // by value where the range hands out proxies (std::vector<bool>): they have no formatter
             for(auto const& element : range) {
@@ -251,9 +251,9 @@ public:
     static consteval auto descriptor() {
         if constexpr(raw) {
             return sc::StringConstant<'A'>{} + descriptorOf<value_t>();
-        } else if constexpr(detail::IsMap<T>) {
+        } else if constexpr(Detail::IsMap<T>) {
             return sc::StringConstant<'M'>{} + descriptorOf<value_t>();
-        } else if constexpr(detail::IsSet<T>) {
+        } else if constexpr(Detail::IsSet<T>) {
             return sc::StringConstant<'S'>{} + descriptorOf<value_t>();
         } else {
             return sc::StringConstant<'L'>{} + descriptorOf<value_t>();
@@ -279,7 +279,7 @@ public:
     }
 };
 
-template<detail::IsTupleLikeButNotRange T>
+template<Detail::IsTupleLikeButNotRange T>
 struct formatter<T> {
     static consteval auto descriptor() {
         return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
@@ -307,7 +307,7 @@ struct formatter<std::optional<T>> {
     template<typename Printer>
     constexpr void format(std::optional<T> const& optional,
                           Printer&                printer) const {
-        detail::Access::printHelper(printer,
+        Detail::Access::printHelper(printer,
                                     static_cast<std::uint8_t>(optional.has_value() ? 1 : 0));
         if(optional) { formatter<std::remove_cvref_t<T>>{}.format(*optional, printer); }
     }
@@ -331,7 +331,7 @@ struct formatter<std::expected<T, E>> {
     constexpr void format(std::expected<T,
                                         E> const& expected,
                           Printer&                printer) const {
-        detail::Access::printHelper(printer,
+        Detail::Access::printHelper(printer,
                                     static_cast<std::uint8_t>(expected.has_value() ? 1 : 0));
         if(expected.has_value()) {
             if constexpr(!std::is_void_v<T>) {
@@ -357,7 +357,7 @@ struct formatter<std::variant<Ts...>> {
     template<typename Printer>
     constexpr void format(std::variant<Ts...> const& variant,
                           Printer&                   printer) const {
-        detail::Access::printHelper(printer, static_cast<std::uint8_t>(variant.index()));
+        Detail::Access::printHelper(printer, static_cast<std::uint8_t>(variant.index()));
         std::visit(
           [&]<typename T>(T const& value) {
               formatter<std::remove_cvref_t<T>>{}.format(value, printer);

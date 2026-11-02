@@ -21,7 +21,7 @@
 
 namespace remote_fmt {
 
-namespace detail {
+namespace Detail {
 
     // The separator is part of the stored symbol, so the host has nothing to decide: it prints
     // the number and then this. mp-units' own space_before_unit_symbol says whether the unit
@@ -70,7 +70,7 @@ namespace detail {
     };
     #endif
 
-}   // namespace detail
+}   // namespace Detail
 
 /// A quantity goes out as its numerical value in its own unit; the unit symbol is in the descriptor
 /// (`Q<n>:<symbol><D>`). The value keeps its own representation -- an integral quantity stays integral, so nothing on
@@ -81,7 +81,7 @@ template<auto R, typename Rep>
 struct formatter<mp_units::quantity<R, Rep>> {
     static consteval auto descriptor() {
         return sc::StringConstant<'Q'>{}
-             + desc::counted(detail::unitSymbolConstant<mp_units::get_unit(R)>())
+             + desc::counted(Detail::unitSymbolConstant<mp_units::get_unit(R)>())
              + descriptorOf<Rep>();
     }
 

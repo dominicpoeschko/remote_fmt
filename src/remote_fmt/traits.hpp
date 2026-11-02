@@ -10,7 +10,7 @@
 #include <tuple>
 #include <type_traits>
 
-namespace remote_fmt { namespace detail {
+namespace remote_fmt { namespace Detail {
 
     template<typename T>
     concept IsTupleLike = requires { typename std::tuple_size<T>::type; };
@@ -34,4 +34,4 @@ namespace remote_fmt { namespace detail {
     template<typename T>
     concept IsSet = requires { typename T::key_type; } && !IsMap<T>;
 
-}}   // namespace remote_fmt::detail
+}}   // namespace remote_fmt::Detail

@@ -82,7 +82,7 @@ constexpr bool isFrameStart(std::byte  b,
     return protocol::isStartMarker(b);
 }
 
-namespace detail {
+namespace Detail {
 
     constexpr bool isValidChar(char character) {
         if(character > '~') { return false; }
@@ -148,6 +148,6 @@ namespace detail {
         return true;
     }
 
-}   // namespace detail
+}   // namespace Detail
 
 }   // namespace remote_fmt

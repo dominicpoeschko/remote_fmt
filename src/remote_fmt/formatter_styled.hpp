@@ -20,13 +20,13 @@ REMOTE_FMT_DETAIL_FMT_WALL_END
 namespace remote_fmt {
 
     #if REMOTE_FMT_USE_FMT_CHECK
-namespace detail {
+namespace Detail {
     // Both fmt and parser.hpp forward the spec to the payload's formatter.
     template<typename T>
     struct HostType<fmt::detail::styled_arg<T>> {
         using type = host_type_t<T>;
     };
-}   // namespace detail
+}   // namespace Detail
     #endif
 
 template<typename T>
@@ -56,20 +56,20 @@ struct formatter<fmt::detail::styled_arg<T>> {
         }
         if(style.has_emphasis()) { flags |= 16U; }
 
-        detail::Access::printHelper(printer, flags);
+        Detail::Access::printHelper(printer, flags);
 
         auto addColor = [&](auto color) {
             if(!color.is_terminal_color()) {
-                detail::Access::printHelper(printer, static_cast<std::uint32_t>(color.value()));
+                Detail::Access::printHelper(printer, static_cast<std::uint32_t>(color.value()));
             } else {
-                detail::Access::printHelper(printer, static_cast<std::uint8_t>(color.value()));
+                Detail::Access::printHelper(printer, static_cast<std::uint8_t>(color.value()));
             }
         };
 
         if(style.has_foreground()) { addColor(style.get_foreground()); }
         if(style.has_background()) { addColor(style.get_background()); }
         if(style.has_emphasis()) {
-            detail::Access::printHelper(printer, static_cast<std::uint8_t>(style.get_emphasis()));
+            Detail::Access::printHelper(printer, static_cast<std::uint8_t>(style.get_emphasis()));
         }
 
         formatter<T>{}.format(styledArg.value, printer);

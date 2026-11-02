@@ -15,7 +15,7 @@
 // - No escapes inside a field.
 // constexpr and without allocation: the constant evaluator walks every log string with it, one
 // element at a time, so it walks each string once.
-namespace remote_fmt::detail {
+namespace remote_fmt::Detail {
 
 enum class ScanError : std::uint8_t { none, loneClose, unclosed, nested };
 
@@ -99,4 +99,4 @@ constexpr FormatShape formatShape(std::string_view s) {
     }
 }
 
-}   // namespace remote_fmt::detail
+}   // namespace remote_fmt::Detail

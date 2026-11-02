@@ -12,7 +12,7 @@
 #include <string_view>
 #include <unordered_map>
 
-namespace remote_fmt { namespace detail {
+namespace remote_fmt { namespace Detail {
 
     // Reading a descriptor (descriptor.hpp's grammar). Every function advances `d` past what it read and returns
     // nullopt / false on a descriptor it cannot read: a catalog is the build's own, but an inline one came off the
@@ -275,4 +275,4 @@ namespace remote_fmt { namespace detail {
             return true;
         }
     }   // namespace grammar
-}}   // namespace remote_fmt::detail
+}}   // namespace remote_fmt::Detail

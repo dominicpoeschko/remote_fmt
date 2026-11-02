@@ -133,7 +133,7 @@ void printHex(std::string_view text) {
 void printSplit(std::string_view d) {
     std::vector<std::string_view> pieces;
     for(std::string_view rest = d; !rest.empty();) {
-        auto const one = remote_fmt::detail::grammar::take(rest);
+        auto const one = remote_fmt::Detail::grammar::take(rest);
         if(!one) {
             std::printf("error");
             return;

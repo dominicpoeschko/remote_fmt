@@ -16,7 +16,7 @@
 #endif
 
 #if REMOTE_FMT_USE_ENCHANTUM
-namespace remote_fmt { namespace detail {
+namespace remote_fmt { namespace Detail {
     // An enum's type entry: `E<D><k>:<value>,<n>:<name>...` (G for a bitflag enum), the enumerators in enchantum's
     // order. The host names the raw value: an unknown value - or an unknown bit of a bitflag enum - prints as the
     // number, as before.
@@ -40,5 +40,5 @@ namespace remote_fmt { namespace detail {
             }
         }
     };
-}}   // namespace remote_fmt::detail
+}}   // namespace remote_fmt::Detail
 #endif

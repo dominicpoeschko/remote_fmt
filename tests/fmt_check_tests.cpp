@@ -25,70 +25,70 @@ using namespace std::literals;
 
 namespace {
 
-enum class Color : std::uint8_t { Red, Blue };
-enum class Tiny : signed char { A, B };
+enum class Color : std::uint8_t { red, blue };
+enum class Tiny : signed char { a, b };
 
 #if REMOTE_FMT_USE_FMT_CHECK
 
-namespace detail = remote_fmt::detail;
+namespace Detail = remote_fmt::Detail;
 
 template<typename Device, typename Host>
-constexpr bool maps_to = std::is_same_v<detail::host_type_t<Device>, Host>;
+constexpr bool mapsTo = std::is_same_v<Detail::host_type_t<Device>, Host>;
 
 // Scalars: the wire preserves width and signedness.
-static_assert(maps_to<std::int8_t,
-                      std::int8_t>);
-static_assert(maps_to<std::uint64_t,
-                      std::uint64_t>);
-static_assert(maps_to<float,
-                      float>);
-static_assert(maps_to<double,
-                      double>);
-static_assert(maps_to<bool,
-                      bool>);
-static_assert(maps_to<char,
-                      char>);
+static_assert(mapsTo<std::int8_t,
+                     std::int8_t>);
+static_assert(mapsTo<std::uint64_t,
+                     std::uint64_t>);
+static_assert(mapsTo<float,
+                     float>);
+static_assert(mapsTo<double,
+                     double>);
+static_assert(mapsTo<bool,
+                     bool>);
+static_assert(mapsTo<char,
+                     char>);
 
 // Types that change across the wire.
-static_assert(maps_to<void*,
-                      void const*>);
-static_assert(maps_to<void const*,
-                      void const*>);
+static_assert(mapsTo<void*,
+                     void const*>);
+static_assert(mapsTo<void const*,
+                     void const*>);
 // fmt has its own std::byte formatter, but the wire carries a 1-byte unsigned.
-static_assert(maps_to<std::byte,
-                      std::uint8_t>);
-static_assert(maps_to<std::string,
-                      std::string_view>);
-static_assert(maps_to<std::string_view,
-                      std::string_view>);
-static_assert(maps_to<char[6],
-                      std::string_view>);
-static_assert(maps_to<decltype("abc"_sc),
-                      std::string_view>);
-static_assert(maps_to<Color,
-                      std::string_view>);
+static_assert(mapsTo<std::byte,
+                     std::uint8_t>);
+static_assert(mapsTo<std::string,
+                     std::string_view>);
+static_assert(mapsTo<std::string_view,
+                     std::string_view>);
+static_assert(mapsTo<char[6],
+                     std::string_view>);
+static_assert(mapsTo<decltype("abc"_sc),
+                     std::string_view>);
+static_assert(mapsTo<Color,
+                     std::string_view>);
 static_assert(!fmt::is_formattable<Color>::value,
               "fmt still cannot format an enum directly");
 // Underlying integer when enchantum does not know the value; char-like types are widened.
-static_assert(std::is_same_v<detail::host_type_alt_t<Color>,
+static_assert(std::is_same_v<Detail::host_type_alt_t<Color>,
                              std::uint8_t>);
-static_assert(std::is_same_v<detail::host_type_alt_t<Tiny>,
+static_assert(std::is_same_v<Detail::host_type_alt_t<Tiny>,
                              std::int8_t>);
 
 // Containers keep their category; elements are mapped too.
-static_assert(maps_to<std::vector<int>,
-                      std::vector<int>>);
-static_assert(maps_to<std::array<std::byte,
-                                 4>,
-                      std::vector<std::uint8_t>>);
-static_assert(maps_to<std::vector<Color>,
-                      std::vector<std::string_view>>);
-static_assert(maps_to<std::set<Color>,
-                      std::set<std::string_view>>);
-static_assert(maps_to<std::map<Color,
-                               std::byte>,
-                      std::map<std::string_view,
-                               std::uint8_t>>);
+static_assert(mapsTo<std::vector<int>,
+                     std::vector<int>>);
+static_assert(mapsTo<std::array<std::byte,
+                                4>,
+                     std::vector<std::uint8_t>>);
+static_assert(mapsTo<std::vector<Color>,
+                     std::vector<std::string_view>>);
+static_assert(mapsTo<std::set<Color>,
+                     std::set<std::string_view>>);
+static_assert(mapsTo<std::map<Color,
+                              std::byte>,
+                     std::map<std::string_view,
+                              std::uint8_t>>);
 
 // A capacity-parameterised container - Kvasir::StaticMap and StaticSet are these - has to map by
 // category: its own template cannot be rebuilt around mapped types because of the non-type
@@ -116,14 +116,14 @@ struct FixedSet {
     [[nodiscard]] constexpr auto end() const REMOTE_FMT_LIFETIMEBOUND { return data_.end(); }
 };
 
-static_assert(maps_to<FixedMap<Color,
-                               std::byte,
-                               4>,
-                      std::map<std::string_view,
-                               std::uint8_t>>);
-static_assert(maps_to<FixedSet<Color,
-                               4>,
-                      std::set<std::string_view>>);
+static_assert(mapsTo<FixedMap<Color,
+                              std::byte,
+                              4>,
+                     std::map<std::string_view,
+                              std::uint8_t>>);
+static_assert(mapsTo<FixedSet<Color,
+                              4>,
+                     std::set<std::string_view>>);
 
 // The mapping must never demand more of a type than remote_fmt's own formatter does, or a type the
 // device can serialize becomes a build error. traits.hpp's is_map asks only for mapped_type and
@@ -148,85 +148,85 @@ struct MapWithoutPairElement {   // is_map, but the element is not a pair
     [[nodiscard]] constexpr auto end() const REMOTE_FMT_LIFETIMEBOUND { return data_.end(); }
 };
 
-static_assert(maps_to<MappedTypeOnly<Color>,
-                      std::map<int,
-                               std::string_view>>);
-static_assert(maps_to<MapWithoutPairElement,
-                      std::vector<int>>,
+static_assert(mapsTo<MappedTypeOnly<Color>,
+                     std::map<int,
+                              std::string_view>>);
+static_assert(mapsTo<MapWithoutPairElement,
+                     std::vector<int>>,
               "falls back to the plain range mapping rather than failing");
 
 // Any map-like lands on std::map; fmt renders both as {k: v}, and only spec validity matters here.
-static_assert(maps_to<std::unordered_map<int,
-                                         std::string>,
-                      std::map<int,
-                               std::string_view>>);
-static_assert(maps_to<std::tuple<int,
-                                 char,
-                                 std::string>,
-                      std::tuple<int,
-                                 char,
-                                 std::string_view>>);
-static_assert(maps_to<std::pair<Color,
-                                int>,
-                      std::tuple<std::string_view,
-                                 int>>);
+static_assert(mapsTo<std::unordered_map<int,
+                                        std::string>,
+                     std::map<int,
+                              std::string_view>>);
+static_assert(mapsTo<std::tuple<int,
+                                char,
+                                std::string>,
+                     std::tuple<int,
+                                char,
+                                std::string_view>>);
+static_assert(mapsTo<std::pair<Color,
+                               int>,
+                     std::tuple<std::string_view,
+                                int>>);
 
     #if REMOTE_FMT_FMT_CHECK_FULL
-static_assert(maps_to<std::optional<std::byte>,
-                      std::optional<std::uint8_t>>);
-static_assert(maps_to<std::variant<Color,
-                                   int>,
-                      std::variant<std::string_view,
-                                   int>>);
-static_assert(maps_to<std::expected<std::byte,
-                                    Color>,
-                      std::expected<std::uint8_t,
-                                    std::string_view>>);
-static_assert(maps_to<std::expected<void,
-                                    Color>,
-                      std::expected<void,
-                                    std::string_view>>);
-static_assert(maps_to<std::chrono::milliseconds,
-                      std::chrono::milliseconds>);
-static_assert(maps_to<std::chrono::sys_time<std::chrono::milliseconds>,
-                      std::chrono::milliseconds>);
+static_assert(mapsTo<std::optional<std::byte>,
+                     std::optional<std::uint8_t>>);
+static_assert(mapsTo<std::variant<Color,
+                                  int>,
+                     std::variant<std::string_view,
+                                  int>>);
+static_assert(mapsTo<std::expected<std::byte,
+                                   Color>,
+                     std::expected<std::uint8_t,
+                                   std::string_view>>);
+static_assert(mapsTo<std::expected<void,
+                                   Color>,
+                     std::expected<void,
+                                   std::string_view>>);
+static_assert(mapsTo<std::chrono::milliseconds,
+                     std::chrono::milliseconds>);
+static_assert(mapsTo<std::chrono::sys_time<std::chrono::milliseconds>,
+                     std::chrono::milliseconds>);
     #endif
 
 // In both modes: a C++26 optional is also a range, which must not win.
-static_assert(maps_to<std::optional<int>,
-                      std::optional<int>>);
+static_assert(mapsTo<std::optional<int>,
+                     std::optional<int>>);
 
 // A type with only a remote_fmt::formatter is text on the host, so its spec is a string's.
 struct OnlyRemoteFmt {};
 
-static_assert(std::is_same_v<detail::checkable_t<OnlyRemoteFmt>,
+static_assert(std::is_same_v<Detail::checkable_t<OnlyRemoteFmt>,
                              std::string_view>);
-static_assert(std::is_same_v<detail::checkable_t<OnlyRemoteFmt const&>,
+static_assert(std::is_same_v<Detail::checkable_t<OnlyRemoteFmt const&>,
                              std::string_view>);
     #if !REMOTE_FMT_FMT_CHECK_FULL
 // remote_fmt's own types whose fmt formatter is out of reach stay unchecked.
-static_assert(std::is_same_v<detail::checkable_t<std::optional<int>>,
-                             detail::UncheckedArg>);
-static_assert(std::is_same_v<detail::checkable_t<std::chrono::milliseconds>,
-                             detail::UncheckedArg>);
+static_assert(std::is_same_v<Detail::checkable_t<std::optional<int>>,
+                             Detail::UncheckedArg>);
+static_assert(std::is_same_v<Detail::checkable_t<std::chrono::milliseconds>,
+                             Detail::UncheckedArg>);
 // Inside a container only the element is, the container's own spec is still checked.
-static_assert(std::is_same_v<detail::checkable_t<std::vector<std::optional<int>>>,
-                             std::vector<detail::UncheckedArg>>);
-static_assert(std::is_same_v<detail::checkable_t<std::tuple<std::chrono::milliseconds,
+static_assert(std::is_same_v<Detail::checkable_t<std::vector<std::optional<int>>>,
+                             std::vector<Detail::UncheckedArg>>);
+static_assert(std::is_same_v<Detail::checkable_t<std::tuple<std::chrono::milliseconds,
                                                             int>>,
-                             std::tuple<detail::UncheckedArg,
+                             std::tuple<Detail::UncheckedArg,
                                         int>>);
-static_assert(std::is_same_v<detail::checkable_t<std::map<int,
+static_assert(std::is_same_v<Detail::checkable_t<std::map<int,
                                                           std::chrono::seconds>>,
                              std::map<int,
-                                      detail::UncheckedArg>>);
+                                      Detail::UncheckedArg>>);
     #endif
-static_assert(std::is_same_v<detail::checkable_t<std::array<OnlyRemoteFmt,
+static_assert(std::is_same_v<Detail::checkable_t<std::array<OnlyRemoteFmt,
                                                             2>>,
                              std::vector<std::string_view>>);
-static_assert(std::is_same_v<detail::checkable_t<std::set<OnlyRemoteFmt>>,
+static_assert(std::is_same_v<Detail::checkable_t<std::set<OnlyRemoteFmt>>,
                              std::set<std::string_view>>);
-static_assert(std::is_same_v<detail::checkable_t<int>,
+static_assert(std::is_same_v<Detail::checkable_t<int>,
                              int>);
 
 #endif   // REMOTE_FMT_USE_FMT_CHECK
@@ -287,7 +287,7 @@ void acceptedFormatStrings() {
 
 // fmt considers every string here valid; these are remote_fmt's own rules (format_grammar.hpp).
 constexpr bool plainFields(std::string_view s) {
-    auto const shape = remote_fmt::detail::formatShape(s);
+    auto const shape = remote_fmt::Detail::formatShape(s);
     return shape.wellFormed && shape.plainFields;
 }
 
@@ -308,9 +308,9 @@ void argumentIdRules() {
     static_assert(!plainFields("{"));
 
     // the field count, nested fields counted as one: the target's "invalid replacement field count"
-    static_assert(remote_fmt::detail::formatShape("{} {{}} {:>3}").fields == 2);
-    static_assert(remote_fmt::detail::formatShape("{:{}}").fields == 1);
-    static_assert(!remote_fmt::detail::formatShape("{:}}x}").wellFormed,
+    static_assert(remote_fmt::Detail::formatShape("{} {{}} {:>3}").fields == 2);
+    static_assert(remote_fmt::Detail::formatShape("{:{}}").fields == 1);
+    static_assert(!remote_fmt::Detail::formatShape("{:}}x}").wellFormed,
                   "no escape inside a field");
 }
 

@@ -21,7 +21,7 @@ struct SiteId {
     catalog_id id;
 };
 
-namespace detail {
+namespace Detail {
     inline constexpr catalog_id firstSiteId = 0x8000;
 
 #if UINTPTR_MAX > 0xFFFFFFFFU
@@ -37,7 +37,7 @@ namespace detail {
         return static_cast<catalog_id>(address + firstSiteId);
 #endif
     }
-}   // namespace detail
+}   // namespace Detail
 }   // namespace remote_fmt
 
 #define REMOTE_FMT_DETAIL_STRINGIFY2(x) #x
@@ -66,6 +66,6 @@ namespace detail {
               gnu::section("remote_fmt_sites." REMOTE_FMT_DETAIL_STRINGIFY( \
                 __COUNTER__))]] static char REMOTE_FMT_SITE_TAG{};          \
             REMOTE_FMT_DETAIL_COUNTER_POP                                   \
-            return ::remote_fmt::detail::siteId(&REMOTE_FMT_SITE_TAG);      \
+            return ::remote_fmt::Detail::siteId(&REMOTE_FMT_SITE_TAG);      \
         }
 #endif

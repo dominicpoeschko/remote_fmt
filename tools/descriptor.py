@@ -3,7 +3,7 @@
 A cataloged string is `fmt 0x1e descriptors` (remote_fmt::described<Args...>(fmt)); the catalog json lists it as
 `{"id": <id>, "fmt": <fmt>, "args": [<descriptor>, ...]}` - one complete descriptor per argument, in argument order
 (a call site's time stamp first; `"args": []` without arguments). A string without 0x1e is no cataloged string: an
-Error, as a descriptor that does not split. The walk mirrors the host's `remote_fmt::detail::grammar::walk`
+Error, as a descriptor that does not split. The walk mirrors the host's `remote_fmt::Detail::grammar::walk`
 (descriptor_grammar.hpp; tests/test_descriptor_split.py holds the two to the same split): a descriptor this cannot
 split is an Error, which fails the link. generate_string_constants.py (before the link) and extract_sites.py (after
 it) both write entries through `catalog_entry`; both list this file in LINK_DEPENDS.
@@ -12,7 +12,7 @@ it) both write entries through `catalog_entry`; both list this file in LINK_DEPE
 from rf_symbols import Error
 
 SEPARATOR = b"\x1e"   # remote_fmt::desc::separator
-MAX_DEPTH = 64        # remote_fmt::detail::grammar::MaxDepth
+MAX_DEPTH = 64        # remote_fmt::Detail::grammar::maxDepth
 UINT64_MAX = (1 << 64) - 1  # grammar::number refuses more
 
 

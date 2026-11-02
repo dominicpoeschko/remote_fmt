@@ -45,7 +45,7 @@ consteval auto described(sc::StringConstant<Chars...> fmt) {
 template<typename Text>
 consteval auto typeDescriptor() {
     if constexpr(useCatalog) {
-        static_cast<void>(&detail::REMOTE_FMT_TYPE_TAG<Text>);
+        static_cast<void>(&Detail::REMOTE_FMT_TYPE_TAG<Text>);
         return desc::typeKey<Text>();
     } else {
         return Text{};
@@ -64,7 +64,7 @@ consteval auto subFormatDescriptor(sc::StringConstant<Chars...> fmt) {
             + ... + descriptorOf<Args>());
 }
 
-namespace detail {
+namespace Detail {
     // The wire-level members of Printer (raw fields, varints, string ids) are private; remote_fmt's own formatters
     // reach them through here, the one friend. A formatter outside remote_fmt declares a descriptor and writes
     // through value(x) / formatArguments(xs...), or declares none and writes through format_to(printer, fmt, args...).
@@ -104,6 +104,6 @@ namespace detail {
             }
         }
     };
-}   // namespace detail
+}   // namespace Detail
 
 }   // namespace remote_fmt

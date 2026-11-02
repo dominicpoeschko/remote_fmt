@@ -37,7 +37,7 @@ struct CatalogFile {
     std::unordered_map<std::string, std::string> types;
 };
 
-namespace detail {
+namespace Detail {
     // one "StringConstants" entry
     struct CatalogEntry {
         catalog_id               id{};
@@ -73,13 +73,13 @@ namespace detail {
         for(auto const& arg : entry.args) { text += arg; }
         return text;
     }
-}   // namespace detail
+}   // namespace Detail
 }   // namespace remote_fmt
 
 // The catalog file's keys keep their spelling (generate_string_constants.py, extract_sites.py and every catalog read
 // them): the members follow the code's names, glaze gets the keys through rename_key.
 template<>
-struct glz::meta<remote_fmt::detail::CatalogJson> {
+struct glz::meta<remote_fmt::Detail::CatalogJson> {
     static constexpr std::string_view rename_key(std::string_view member REMOTE_FMT_LIFETIMEBOUND) {
         if(member == "stringConstants") { return "StringConstants"; }
         if(member == "sites") { return "Sites"; }
@@ -94,7 +94,7 @@ namespace remote_fmt {
 inline std::expected<CatalogFile,
                      std::string>
 parseCatalogFile(std::string text) {
-    detail::CatalogJson data{};
+    Detail::CatalogJson data{};
     if(auto const ec
        = glz::read<glz::opts{.error_on_unknown_keys = false, .error_on_missing_keys = true}>(data,
                                                                                              text);
@@ -105,7 +105,7 @@ parseCatalogFile(std::string text) {
     CatalogFile file{};
     for(auto& [key, entry] : data.types) { file.types.emplace(key, std::move(entry)); }
     for(auto const& entry : data.stringConstants) {
-        auto whole = detail::resolved(detail::joined(entry), file.types);
+        auto whole = Detail::resolved(Detail::joined(entry), file.types);
         if(!whole) {
             return std::unexpected("string " + std::to_string(unsigned{entry.id})
                                    + " refers to a type entry that \"Types\" does not hold");

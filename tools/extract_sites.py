@@ -3,7 +3,7 @@
 before the link (`--strings`, its `<target>_string_constants.prelink.json`), then the image's call sites
 (REMOTE_FMT_SITE, src/remote_fmt/catalog.hpp): each site's `{"id", "fmt", "args"}` entry (descriptor.py
 catalog_entry) to "StringConstants" and its function's signature to "Sites": {"<id>": "<signature>"};
-"FrameCheck"; the image's type entries (remote_fmt::detail::REMOTE_FMT_TYPE_TAG, descriptor.hpp) to "Types":
+"FrameCheck"; the image's type entries (remote_fmt::Detail::REMOTE_FMT_TYPE_TAG, descriptor.hpp) to "Types":
 {"<16 hex>": descriptor}. A site's string is `fmt 0x1e descriptors`, split into one descriptor per
 argument; the link fails on a site without descriptors, a descriptor that does not split, a type key
 that two texts share, a type reference without its entry and a site at 0xFFFF (the inline id). The
@@ -27,7 +27,7 @@ from rf_symbols import (Error, find_demangler, invalid_utf8, read_symbols as rea
                         string_constant_bytes)
 
 SECTION = "remote_fmt_sites"
-ANCHOR = "_ZN10remote_fmt6detail10siteAnchorE"
+ANCHOR = "_ZN10remote_fmt6Detail10siteAnchorE"
 SITE_TAG_MANGLED = "19REMOTE_FMT_SITE_TAG"
 # `_ZZZ<enclosing>E NK <lambda> clI<sc::StringConstant<...>> ... E19REMOTE_FMT_SITE_TAG`, the lambda being
 # `UlTy..._` (gcc, clang) or clang's `<len>$_<n>` in a function of internal linkage. Split by structure: the

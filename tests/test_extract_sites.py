@@ -94,7 +94,7 @@ class SplitTests(unittest.TestCase):
         self.assertIsNone(ex.split_site(site("1fv", "x", "4$_0")))
 
     def test_other_symbols_are_no_site(self):
-        self.assertIsNone(ex.split_site("_ZN10remote_fmt6detail10siteAnchorE"))
+        self.assertIsNone(ex.split_site("_ZN10remote_fmt6Detail10siteAnchorE"))
 
     def test_an_enclosing_clang_lambda_is_named(self):
         enclosing = "ZN12_GLOBAL__N_11fEvENK3$_1clEv"   # f()'s own lambda, which logs
@@ -167,8 +167,8 @@ class DescriptorTests(unittest.TestCase):
         self.assertEqual(ex.type_key(b"a"), "af63dc4c8601ec8c")
 
     def test_two_texts_on_one_key_fail(self):
-        elf = (False, {1: 0}, [("_ZN10remote_fmt6detail19REMOTE_FMT_TYPE_TAGIN2sc14StringConstantIJLc97EEEEEE", 0, 1),
-                               ("_ZN10remote_fmt6detail19REMOTE_FMT_TYPE_TAGIN2sc14StringConstantIJLc98EEEEEE", 0, 1)])
+        elf = (False, {1: 0}, [("_ZN10remote_fmt6Detail19REMOTE_FMT_TYPE_TAGIN2sc14StringConstantIJLc97EEEEEE", 0, 1),
+                               ("_ZN10remote_fmt6Detail19REMOTE_FMT_TYPE_TAGIN2sc14StringConstantIJLc98EEEEEE", 0, 1)])
         with unittest.mock.patch.object(ex, "type_key", lambda text: "0" * 16):
             with self.assertRaisesRegex(ex.Error, "share the key"):
                 ex.types_of(elf)
@@ -441,7 +441,7 @@ template<typename S> struct Named { static void get() { auto s = REMOTE_FMT_SITE
 void typed() {
     auto s = REMOTE_FMT_SITE();
     sink = s("t {:#x}\x1e"_sc + remote_fmt::desc::typeKey<Entry>());
-    sink = remote_fmt::detail::REMOTE_FMT_TYPE_TAG<Entry>;
+    sink = remote_fmt::Detail::REMOTE_FMT_TYPE_TAG<Entry>;
 }
 extern "C" [[noreturn]] void Reset_Handler() {
     local(); longLine(); Box<int>::get(); Box<char>::get(); Named<decltype("x"_sc)>::get(); typed();
@@ -590,7 +590,7 @@ SECTIONS {
     NEVER_CALLED = r'''
 template<typename Text>
 consteval auto keyOf() {
-    static_cast<void>(&remote_fmt::detail::REMOTE_FMT_TYPE_TAG<Text>);
+    static_cast<void>(&remote_fmt::Detail::REMOTE_FMT_TYPE_TAG<Text>);
     return remote_fmt::desc::typeKey<Text>();
 }
 inline void neverCalled() { auto s = REMOTE_FMT_SITE(); sink = s("n {}\x1e"_sc + keyOf<decltype("Eu11:0,5:never"_sc)>()); }

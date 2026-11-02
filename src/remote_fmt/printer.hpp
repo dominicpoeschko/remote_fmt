@@ -35,7 +35,7 @@ namespace remote_fmt {
     #define REMOTE_FMT_CRC_HOOK(bytes) static_cast<void>(bytes)
 #endif
 
-namespace detail {
+namespace Detail {
 
     // The generated id of a string constant, defined by the generated catalog, which a TU never sees: the one place
     // that silences clang's warning about it.
@@ -50,7 +50,7 @@ namespace detail {
 #ifdef __clang__
     #pragma clang diagnostic pop
 #endif
-}   // namespace detail
+}   // namespace Detail
 
 template<typename Printer,
          char... Chars,
@@ -197,7 +197,7 @@ private:
         }
     }
 
-    friend struct detail::Access;
+    friend struct Detail::Access;
 
     template<typename Printer,
              char... Chars,
@@ -211,11 +211,11 @@ private:
     template<char... Chars>
     [[gnu::always_inline]] constexpr void stringRef(sc::StringConstant<Chars...> text) {
         if constexpr(useCatalog) {
-            append(static_cast<std::uint16_t>(detail::catalogIdOf<decltype(text)>()));
+            append(static_cast<std::uint16_t>(Detail::catalogIdOf<decltype(text)>()));
         } else {
             auto constexpr stringView = std::string_view{decltype(text){}};
             append(protocol::inlineId);
-            detail::Access::varint(*this, stringView.size());
+            Detail::Access::varint(*this, stringView.size());
             lowprint(stringView);
         }
     }
@@ -302,7 +302,7 @@ private:
             if constexpr(std::is_same_v<Site, SiteId>) {
                 id = site.id;
             } else {
-                id = detail::catalogIdOf<decltype(described<Args...>(fmt))>();
+                id = Detail::catalogIdOf<decltype(described<Args...>(fmt))>();
             }
             printCataloged(id, std::forward<Args>(args)...);
         } else {

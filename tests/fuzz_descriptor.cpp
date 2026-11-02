@@ -63,10 +63,10 @@ std::vector<std::byte> frame(bool                       checked,
 void checkResolveCopies(std::string_view descriptors) {
     if(descriptors.contains('#')) { return; }
     std::string      out;
-    bool const       resolved = remote_fmt::detail::grammar::resolve(descriptors, {}, out);
+    bool const       resolved = remote_fmt::Detail::grammar::resolve(descriptors, {}, out);
     std::string_view rest     = descriptors;
     bool             readable = true;
-    while(readable && !rest.empty()) { readable = remote_fmt::detail::grammar::skip(rest); }
+    while(readable && !rest.empty()) { readable = remote_fmt::Detail::grammar::skip(rest); }
     if(resolved != readable || (resolved && out != descriptors)) { std::abort(); }
 }
 
@@ -100,7 +100,7 @@ extern "C" int LLVMFuzzerTestOneInput(std::uint8_t const* data,
         // descriptors only: one plain field per descriptor the grammar can read (at most 16)
         std::string      fields;
         std::string_view d = text;
-        for(int n = 0; n != 16 && !d.empty() && remote_fmt::detail::grammar::skip(d); ++n) {
+        for(int n = 0; n != 16 && !d.empty() && remote_fmt::Detail::grammar::skip(d); ++n) {
             fields += "{}";
         }
         text = fields + remote_fmt::desc::separator + text;
@@ -121,7 +121,7 @@ extern "C" int LLVMFuzzerTestOneInput(std::uint8_t const* data,
       {"00000000000000cc",  "F6:<{}|{}>2:#00000000000000aai2"},
       {"00000000000000dd", "Ru49:a={} b={}0:2:3,1:1,1:x12,0:"}
     };
-    auto const resolved = remote_fmt::detail::resolved(text, types);
+    auto const resolved = remote_fmt::Detail::resolved(text, types);
     std::unordered_map<std::uint16_t, std::string> strings{
       {0x8001,        resolved ? *resolved : text},
       // a `*` value's sub format string
