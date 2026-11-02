@@ -48,7 +48,7 @@ if(NOT CMAKE_CROSSCOMPILING)
             GIT_REPOSITORY
             https://github.com/stephenberry/glaze.git
             GIT_TAG
-            v9.0.0
+            v9.1.0
             GIT_BRANCH
             main
             PATCH_FILE
