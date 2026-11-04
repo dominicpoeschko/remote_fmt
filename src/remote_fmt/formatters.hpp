@@ -358,11 +358,18 @@ struct formatter<std::variant<Ts...>> {
     constexpr void format(std::variant<Ts...> const& variant,
                           Printer&                   printer) const {
         Detail::Access::printHelper(printer, static_cast<std::uint8_t>(variant.index()));
-        std::visit(
-          [&]<typename T>(T const& value) {
-              formatter<std::remove_cvref_t<T>>{}.format(value, printer);
-          },
-          variant);
+        // a fold over the alternatives, not std::visit: each a direct call (libc++'s visit dispatches through a
+        // table of function pointers, a call the static stack bound - Kvasir's stack_bound.py - cannot follow)
+        [&]<std::size_t... I>(std::index_sequence<I...>) {
+            static_cast<void>(
+              ((variant.index() == I
+                  ? (formatter<
+                       std::remove_cvref_t<std::variant_alternative_t<I, std::variant<Ts...>>>>{}
+                       .format(*std::get_if<I>(&variant), printer),
+                     true)
+                  : false)
+               || ...));
+        }(std::index_sequence_for<Ts...>{});
     }
 };
 
