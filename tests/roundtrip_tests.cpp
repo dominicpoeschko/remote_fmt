@@ -699,6 +699,18 @@ void fmtParityStyled() {
     CHECK_PARITY("{}", fmt::styled(7, fmt::fg(fmt::terminal_color::green)));
     CHECK_PARITY("{}", fmt::styled(7, fmt::emphasis::underline | fmt::emphasis::italic));
     CHECK_PARITY("{:>8}", fmt::styled(7, fmt::fg(fmt::terminal_color::bright_cyan)));
+    // a terminal colour beside a colour in the other slot: fmt refuses two colours in ONE slot only, and an image
+    // sends these (black on cyan) - the decoder took them for malformed and dropped the whole frame
+    CHECK_PARITY(
+      "{}",
+      fmt::styled(" inverse "sv,
+                  fmt::fg(fmt::terminal_color::black) | fmt::bg(fmt::terminal_color::cyan)));
+    CHECK_PARITY("{}",
+                 fmt::styled(3, fmt::fg(fmt::terminal_color::yellow) | fmt::bg(fmt::color::navy)));
+    CHECK_PARITY("{}",
+                 fmt::styled(4,
+                             fmt::fg(fmt::color::orange) | fmt::bg(fmt::terminal_color::blue)
+                               | fmt::emphasis::bold));
 }
 
 // Wrapper types: optional, variant and expected. These used to be the one family that still

@@ -1109,11 +1109,9 @@ namespace Detail {
             bool const bgTerm = 0 != (*set & 8U);
             bool const emp    = 0 != (*set & 16U);
 
-            if((fgRgb && fgTerm) || (bgRgb && bgTerm) || (fgTerm && (bgTerm || bgRgb))
-               || (bgTerm && (fgTerm || fgRgb)))
-            {
-                return malformed();
-            }
+            // one colour per slot; a terminal colour beside a colour in the other slot (black on cyan) is what fmt
+            // makes of fg(...) | bg(...), not malformed
+            if((fgRgb && fgTerm) || (bgRgb && bgTerm)) { return malformed(); }
             fmt::text_style style{};
             bool            bad   = false;
             bool            ran   = false;
