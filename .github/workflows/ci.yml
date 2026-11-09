@@ -17,26 +17,17 @@ jobs:
         runs-on: ubuntu-latest
         container:
             image: archlinux:latest
-        # Release is the only build type that defines NDEBUG, and it is the default, so without the
-        # two Debug entries every job here compiles the asserts out and none of them can ever fire.
-        # They mirror the sanitizer entries so the deepest-checking configurations carry them.
+        # ship: the configuration a host tool ships in (cmake_helpers' Release: NDEBUG, LTO, a gcc LTO link failing on
+        # the optimizer's late warnings). Every other entry is Release with its asserts and without LTO: faster, and
+        # gcc's warnings come at compile time.
         strategy:
             fail-fast: false
             matrix:
                 compiler:
-                    - {cc: gcc, cxx: g++}
+                    - {cc: gcc, cxx: g++, ship: true}
                     - {cc: gcc, cxx: g++, stdlib_debug: true, sanitizer: address}
-                    - {cc: clang, cxx: clang++}
+                    - {cc: clang, cxx: clang++, ship: true}
                     - {cc: clang, cxx: clang++, stdlib: libc++, stdlib_debug: true, sanitizer: address}
-                    - {cc: gcc, cxx: g++, build_type: Debug, stdlib_debug: true, sanitizer: address}
-                    - {
-                        cc: clang,
-                        cxx: clang++,
-                        build_type: Debug,
-                        stdlib: libc++,
-                        stdlib_debug: true,
-                        sanitizer: address,
-                      }
 
         steps:
             - name: Set up C++ environment
@@ -45,7 +36,7 @@ jobs:
                 pacman -S --noconfirm --disable-download-timeout git cmake base-devel python llvm ${{ matrix.compiler.cc == 'clang' && 'clang' || '' }} ${{ matrix.compiler.stdlib == 'libc++' && 'libc++ lld' || '' }}
 
             - name: Checkout repository
-              uses: actions/checkout@v5
+              uses: actions/checkout@v7
               with:
                 submodules: recursive
 
@@ -54,7 +45,9 @@ jobs:
                 cmake -S tests -B build
                 -DUSE_FORCE_FETCH=ON
                 -DUSE_WARNINGS_AS_ERRORS=ON
-                ${{ matrix.compiler.build_type && format('-DCMAKE_BUILD_TYPE={0}', matrix.compiler.build_type) || '' }}
+                -DCMAKE_BUILD_TYPE=Release
+                -DUSE_NATIVE_FLAG=OFF
+                ${{ !matrix.compiler.ship && '-DUSE_NDEBUG=OFF -DUSE_LTO=OFF -DCMAKE_CXX_FLAGS_RELEASE=-O3' || '' }}
                 ${{ matrix.compiler.sanitizer && format('-DUSE_SANITIZER={0}', matrix.compiler.sanitizer) || '' }}
                 ${{ matrix.compiler.stdlib && format('-DUSE_STD_LIB={0}', matrix.compiler.stdlib) || '' }}
                 ${{ matrix.compiler.stdlib_debug && '-DUSE_STDLIB_DEBUG=true' || '' }}
@@ -66,12 +59,12 @@ jobs:
               run: cmake --build build -j"$(nproc)"
 
             - name: Run tests
-              run: cd build && ctest --output-on-failure
+              run: cd build && ctest --output-on-failure -j"$(nproc)"
 
             # clang-tidy (Kvasir_SDK master's tools/tidy.py and .clang-tidy, .github/actions/tidy) over this tree:
             # this repository's findings (string_constant included) fail, the others' are foreign
             - name: clang-tidy
-              if: matrix.compiler.cc == 'clang' && !matrix.compiler.sanitizer && !matrix.compiler.build_type
+              if: matrix.compiler.cc == 'clang' && !matrix.compiler.sanitizer
               uses: kvasir-io/Kvasir_SDK/.github/actions/tidy@master
               timeout-minutes: 30
               with:
@@ -99,12 +92,16 @@ jobs:
                 pacman -S --noconfirm --disable-download-timeout git cmake base-devel python llvm ${{ matrix.compiler.cc == 'clang' && 'clang' || '' }}
 
             - name: Checkout repository
-              uses: actions/checkout@v5
+              uses: actions/checkout@v7
               with:
                 submodules: recursive
 
+            # optimised and without NDEBUG: the examples' assert()s are their checks (no cmake_helpers build options in
+            # this tree, so CMake's own Release flags, -O3 in place of -O3 -DNDEBUG)
             - name: Configure CMake
-              run: cmake -S examples -B build_examples -DUSE_FORCE_FETCH=ON -DUSE_WARNINGS_AS_ERRORS=ON
+              run: >
+                cmake -S examples -B build_examples -DUSE_FORCE_FETCH=ON -DUSE_WARNINGS_AS_ERRORS=ON
+                -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS_RELEASE=-O3
               env:
                 CC: ${{ matrix.compiler.cc }}
                 CXX: ${{ matrix.compiler.cxx }}
@@ -122,12 +119,12 @@ jobs:
                 ./catalog_generator
 
     # The fuzzers' corpora, replayed once each (-runs=0): the same inputs on every machine and every run, so this job
-    # blocks a merge. Built like build-and-test's two clang ASan entries, where the ctest smokes run: clang, libc++
+    # blocks a merge. Built like build-and-test's clang ASan entry, where the ctest smokes run: clang, libc++
     # with its debug mode, -DUSE_SANITIZER=address (ASan + UBSan + clang's integer group, fmt's and libstdc++'s
     # wraparound in tests/fmt_sanitizer_ignorelist.txt); the fuzz targets add -fsanitize=fuzzer,address,undefined
     # -fno-sanitize-recover=all themselves, so any sanitizer report, crash, leak, timeout or OOM on a corpus input
-    # fails it. Both build types: Release is what ships, Debug is the only one where the parser's asserts exist, and
-    # their codegen differs.
+    # fails it. Both builds: ship (cmake_helpers' Release: NDEBUG, LTO) and asserts (Release with the assert()s, no
+    # LTO, as build-and-test's other entries); their codegen differs.
     #
     # The parser replays its generated seeds, tests/corpus.tar.xz (the committed, minimized corpus, unpacked by the
     # configure step into build/corpus_committed) and tests/corpus_regressions/ (every input a run once found); the
@@ -145,7 +142,7 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                build_type: [Release, Debug]
+                build: [ship, asserts]
 
         steps:
             - name: Set up C++ environment
@@ -154,7 +151,7 @@ jobs:
                 pacman -S --noconfirm --disable-download-timeout git cmake base-devel python clang libc++ lld
 
             - name: Checkout repository
-              uses: actions/checkout@v5
+              uses: actions/checkout@v7
               with:
                 submodules: recursive
 
@@ -163,7 +160,9 @@ jobs:
                 cmake -S tests -B build
                 -DUSE_FORCE_FETCH=ON
                 -DUSE_WARNINGS_AS_ERRORS=ON
-                -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+                -DCMAKE_BUILD_TYPE=Release
+                -DUSE_NATIVE_FLAG=OFF
+                ${{ matrix.build == 'asserts' && '-DUSE_NDEBUG=OFF -DUSE_LTO=OFF -DCMAKE_CXX_FLAGS_RELEASE=-O3' || '' }}
                 -DUSE_SANITIZER=address
                 -DUSE_STD_LIB=libc++
                 -DUSE_STDLIB_DEBUG=true
@@ -201,7 +200,7 @@ jobs:
     # Fuzzing is a search, not a test: a time-bounded run explores differently on every machine and every seed, so
     # it never blocks (continue-on-error: a finding marks this job red without failing the workflow). The seed is
     # printed: reproduce with it, and add the crash input to tests/corpus_regressions so the `fuzz` job replays it
-    # from then on. Built as `fuzz` above, both build types.
+    # from then on. Built as `fuzz` above, both builds.
     #
     # Time per fuzzer: 300 s on push / pull request / dispatch, 1800 s on the weekly schedule. FUZZ_SECONDS in the
     # environment overrides both (act: --env FUZZ_SECONDS=20).
@@ -213,7 +212,7 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                build_type: [Release, Debug]
+                build: [ship, asserts]
         env:
             FUZZ_DEFAULT_SECONDS: ${{ github.event_name == 'schedule' && '1800' || '300' }}
 
@@ -224,7 +223,7 @@ jobs:
                 pacman -S --noconfirm --disable-download-timeout git cmake base-devel python clang libc++ lld
 
             - name: Checkout repository
-              uses: actions/checkout@v5
+              uses: actions/checkout@v7
               with:
                 submodules: recursive
 
@@ -233,7 +232,9 @@ jobs:
                 cmake -S tests -B build
                 -DUSE_FORCE_FETCH=ON
                 -DUSE_WARNINGS_AS_ERRORS=ON
-                -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+                -DCMAKE_BUILD_TYPE=Release
+                -DUSE_NATIVE_FLAG=OFF
+                ${{ matrix.build == 'asserts' && '-DUSE_NDEBUG=OFF -DUSE_LTO=OFF -DCMAKE_CXX_FLAGS_RELEASE=-O3' || '' }}
                 -DUSE_SANITIZER=address
                 -DUSE_STD_LIB=libc++
                 -DUSE_STDLIB_DEBUG=true
@@ -291,9 +292,9 @@ jobs:
             # artifacts stay in the act workdir.
             - name: Upload crash artifacts
               if: failure() && !env.ACT
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
-                # Per build type: upload-artifact@v4 rejects a name another job already uploaded.
-                name: fuzz-crashes-${{ matrix.build_type }}
+                # Per build: upload-artifact rejects a name another job already uploaded.
+                name: fuzz-crashes-${{ matrix.build }}
                 path: fuzz-artifacts/
                 if-no-files-found: ignore

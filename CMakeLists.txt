@@ -36,7 +36,7 @@ if(NOT CMAKE_CROSSCOMPILING)
         GIT_REPOSITORY
         https://github.com/fmtlib/fmt.git
         GIT_TAG
-        12.2.0
+        12.2.1
         GIT_BRANCH
         master)
 
@@ -60,7 +60,7 @@ if(NOT CMAKE_CROSSCOMPILING)
         GIT_REPOSITORY
         https://github.com/ZXShady/enchantum
         GIT_TAG
-        0.4.0
+        0.5.0
         GIT_BRANCH
         main)
 else()
@@ -73,7 +73,7 @@ else()
         GIT_REPOSITORY
         https://github.com/fmtlib/fmt.git
         GIT_TAG
-        12.2.0
+        12.2.1
         GIT_BRANCH
         master
         PATCH_FILE
@@ -104,7 +104,7 @@ else()
         GIT_REPOSITORY
         https://github.com/ZXShady/enchantum
         GIT_TAG
-        0.4.0
+        0.5.0
         GIT_BRANCH
         main)
 
